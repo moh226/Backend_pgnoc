@@ -1,7 +1,7 @@
 from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
-from sgi.models import InformationPresentation, SGI
+from sgi.models import ConventionTarifaire, InformationPresentation, SGI
 
 
 class SGIPublicSerializer(serializers.ModelSerializer):
@@ -35,9 +35,10 @@ class SGIFicheSerializer(serializers.ModelSerializer):
     def get_convention(self, sgi) -> dict[str, object]:
         try:
             convention = sgi.convention
-        except sgi.convention.RelatedObjectDoesNotExist:
+        except ConventionTarifaire.DoesNotExist:
             return {}
         return {
             "titre": convention.titre,
             "signe_requis": bool(convention.fichier_pdf),
+            "fichier_url": convention.fichier_pdf.url if convention.fichier_pdf else None,
         }

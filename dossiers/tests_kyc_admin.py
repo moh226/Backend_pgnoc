@@ -236,7 +236,7 @@ class ParametrageChampKYCTests(APITestCase):
             self.url_liste,
             {"etape": str(self.etape_a.pk), "code": "nom", "nom": "Nom",
              "type": ChampKYC.TypeChamp.TEXTE_COURT,
-             "champ_parent": None, "valeur_declencheur": None},
+             "champ_parent": None},
             format="json",
         )
         self.assertEqual(reponse.status_code, status.HTTP_201_CREATED)

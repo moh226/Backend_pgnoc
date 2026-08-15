@@ -153,10 +153,25 @@ class AgentSerializer(serializers.ModelSerializer):
         )
         read_only_fields = ("id", "date_joined")
 
+    def validate_email(self, value):
+        """Normalise l'email et vérifie l'unicité insensible à la casse.
+
+        Sans ce contrôle appliqué au niveau du sérialiseur, un email
+        déjà existant avec une casse différente déclencherait une
+        IntegrityError (contrainte unique sensible à la casse) et donc
+        une réponse 500 au lieu d'une erreur 400 exploitable.
+        Seule la création est concernée : l'email n'est pas modifiable
+        en mise à jour (voir `update`).
+        """
+        email = Utilisateur.objects.normalize_email(value)
+        if self.instance is None and Utilisateur.objects.filter(email__iexact=email).exists():
+            raise serializers.ValidationError(
+                "Un compte existe déjà avec cette adresse email."
+            )
+        return email
+
     @staticmethod
     def _generer_mot_de_passe():
-        # Exclut les caractères ambigus (o/0, l/1, etc.) pour une
-        # remise manuscrite sans erreur de recopie.
         import random
         import string
 
@@ -195,6 +210,11 @@ class AgentSerializer(serializers.ModelSerializer):
         return utilisateur
 
     def update(self, instance, validated_data):
+        if "email" in validated_data:
+            raise serializers.ValidationError(
+                {"email": "L'email d'un agent n'est pas modifiable : "
+                          "désactivez le compte et recréez-le si besoin."}
+            )
         instance.prenom = validated_data.get("prenom", instance.prenom)
         instance.nom = validated_data.get("nom", instance.nom)
         instance.is_active = validated_data.get("is_active", instance.is_active)

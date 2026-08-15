@@ -18,6 +18,8 @@ from drf_spectacular.utils import extend_schema, inline_serializer
 from rest_framework import generics, parsers, permissions, serializers, status
 from rest_framework.response import Response
 
+from audit.models import JournalAudit
+from audit.services import journaliser
 from comptes.permissions import EstAdminSGI
 from sgi.models import ConventionTarifaire, InformationPresentation
 
@@ -115,6 +117,10 @@ def _gerer_convention(request):
 
     fichier = request.FILES.get("fichier_pdf")
     ancien = convention.fichier_pdf.name or ""
+    avant = {
+        "titre": convention.titre,
+        "fichier_pdf": ancien,
+    }
     if fichier:
         erreur = _valider_pdf(fichier)
         if erreur:
@@ -132,6 +138,21 @@ def _gerer_convention(request):
 
     convention.titre = request.data.get("titre", convention.titre)
     convention.save(update_fields=["titre", "fichier_pdf", "date_modification"])
+
+    # Document réglementaire : toute publication/modification est
+    # tracée dans le journal d'audit (conformité CREPMF).
+    journaliser(
+        request.user,
+        JournalAudit.Action.MODIFICATION_CONVENTION,
+        "ConventionTarifaire",
+        str(sgi_id),
+        avant=avant,
+        apres={
+            "titre": convention.titre,
+            "fichier_pdf": convention.fichier_pdf.name or "",
+        },
+        requete=request,
+    )
 
     return Response({
         "titre": convention.titre,
@@ -185,8 +206,18 @@ class PresentationAdminAPIView(generics.GenericAPIView):
         presentation, _ = _obtenir_ou_creer(
             InformationPresentation, sgi_id=request.user.sgi_id,
         )
+        avant = {"contenu": presentation.contenu}
         presentation.contenu = request.data.get("contenu", "")
         presentation.save(update_fields=["contenu"])
+        journaliser(
+            request.user,
+            JournalAudit.Action.MODIFICATION_PRESENTATION,
+            "InformationPresentation",
+            str(presentation.sgi_id),
+            avant=avant,
+            apres={"contenu": presentation.contenu},
+            requete=request,
+        )
         return Response({
             "contenu": presentation.contenu,
             "date_publication": presentation.date_publication,

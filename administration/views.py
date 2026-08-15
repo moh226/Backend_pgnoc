@@ -29,6 +29,17 @@ from comptes.permissions import EstAdminGeneral
 from dossiers.models import Dossier
 from sgi.models import SGI
 
+import uuid as module_uuid
+
+
+def _est_uuid_valide(valeur):
+    """True si `valeur` est un UUID bien formé (évite un 500 sur filtre)."""
+    try:
+        module_uuid.UUID(str(valeur))
+        return True
+    except (ValueError, AttributeError):
+        return False
+
 
 def _snapshot_sgi(sgi):
     return {"nom": sgi.nom, "code_sgi": sgi.code_sgi, "est_active": sgi.est_active}
@@ -127,6 +138,10 @@ class UtilisateurListCreateAPIView(generics.ListCreateAPIView):
         if email := params.get("email", "").strip():
             qs = qs.filter(email__icontains=email)
         if sgi_id := params.get("sgi"):
+            if not _est_uuid_valide(sgi_id):
+                raise serializers.ValidationError(
+                    {"sgi": "Le paramètre `sgi` doit être un identifiant UUID valide."}
+                )
             qs = qs.filter(sgi_id=sgi_id)
         if actif := params.get("actif"):
             qs = qs.filter(is_active=actif.lower() in ("true", "1"))

@@ -12,9 +12,22 @@ Règles portées par ces vues :
 
 from rest_framework import generics, permissions
 
+from audit.models import JournalAudit
+from audit.services import journaliser
 from comptes.models import Role, Utilisateur
 from comptes.permissions import EstAdminSGI
 from comptes.serializers import AgentSerializer
+
+
+def _apercu_agent(utilisateur):
+    """Vue JSON de l'état d'un compte agent (sans secret)."""
+    return {
+        "email": utilisateur.email,
+        "actif": utilisateur.is_active,
+        "matricule": getattr(
+            getattr(utilisateur, "profil_agent_sgi", None), "matricule", None
+        ),
+    }
 
 
 class AgentListCreateAPIView(generics.ListCreateAPIView):
@@ -32,6 +45,19 @@ class AgentListCreateAPIView(generics.ListCreateAPIView):
             role__code=Role.Code.AGENT_SGI,
             sgi_id=self.request.user.sgi_id,
         ).select_related("profil_agent_sgi")
+
+    def perform_create(self, serializer):
+        # La création d'un compte (avec mot de passe initial remis par
+        # l'admin) est une action sensible : tracée au journal d'audit.
+        utilisateur = serializer.save()
+        journaliser(
+            self.request.user,
+            JournalAudit.Action.CREATION_AGENT,
+            "Utilisateur",
+            str(utilisateur.pk),
+            apres=_apercu_agent(utilisateur),
+            requete=self.request,
+        )
 
 
 class AgentRetrieveUpdateAPIView(generics.RetrieveUpdateAPIView):
@@ -51,3 +77,16 @@ class AgentRetrieveUpdateAPIView(generics.RetrieveUpdateAPIView):
             role__code=Role.Code.AGENT_SGI,
             sgi_id=self.request.user.sgi_id,
         ).select_related("profil_agent_sgi")
+
+    def perform_update(self, serializer):
+        avant = _apercu_agent(serializer.instance)
+        utilisateur = serializer.save()
+        journaliser(
+            self.request.user,
+            JournalAudit.Action.MODIFICATION_AGENT,
+            "Utilisateur",
+            str(utilisateur.pk),
+            avant=avant,
+            apres=_apercu_agent(utilisateur),
+            requete=self.request,
+        )

@@ -88,3 +88,27 @@ def _notifier_transition(dossier, nouveau_statut):
     if notifications:
         with transaction.atomic():
             Notification.objects.bulk_create(notifications)
+
+
+def notifier_commentaire_agent(dossier, valeur, agent):
+    """Alerte l'investisseur d'une demande de correction (UC09).
+
+    Best-effort, même discipline que `notifier_transition` : une alerte
+    impossible à produire est journalisée, jamais une erreur 500.
+    """
+    try:
+        Notification.objects.create(
+            utilisateur=dossier.utilisateur,
+            titre="Correction demandée sur votre dossier",
+            message=(
+                f"Votre dossier {dossier.reference} : « "
+                f"{valeur.champ.nom} » demande une correction. "
+                f"Motif : {valeur.commentaire_agent}"
+            ),
+            type_notif=Notification.TypeNotif.DOSSIER,
+        )
+    except Exception:
+        logger.exception(
+            "Échec de notification de correction pour le dossier %s",
+            getattr(dossier, "reference", dossier.pk),
+        )

@@ -105,6 +105,10 @@ def _appliquer_transition(dossier,
         _verifier_avant_soumission(dossier)
         dossier.date_soumission = timezone.now()
         dossier.etape_courante = None
+        # La configuration KYC (étapes/champs/obligatoire) a pu changer
+        # depuis la dernière saisie : on fige la progression au moment de
+        # la soumission pour que l'affichage en file d'attente reste juste.
+        dossier.progression_pct = calculer_progression_pct(dossier)
         if dossier.statut == Dossier.Statut.REJETE:
             # Resoumission après rejet : nouvelle version, l'ancien agent
             # est libéré, l'historique de décision et le motif d'ancien
@@ -181,7 +185,7 @@ def champs_effectivement_modifies(dossier):
     comparant aux valeurs persistées en base.
     """
     candidats = [
-        "statut", "version", "etape_courante", "agent",
+        "statut", "version", "etape_courante", "agent", "progression_pct",
         "date_soumission", "date_instruction", "date_decision", "motif_rejet",
     ]
     en_base = Dossier.objects.only(*candidats).get(pk=dossier.pk)
@@ -199,14 +203,26 @@ def champs_effectivement_modifies(dossier):
 def _verifier_avant_soumission(dossier):
     """UC10 : un dossier incomplet ne peut pas être soumis.
 
-    Précondition supplémentaire (UC16) : dès lors que la SGI
-    destinataire a publié sa convention tarifaire, l'investisseur doit
-    l'avoir acceptée (`dossier.convention_acceptee`) avant soumission.
-    Tant qu'aucune convention n'est publiée, aucun accord n'est exigé.
+    Préconditions :
+      - progression 100 % (tous les champs obligatoires renseignés) ;
+      - SGI destinataire active ;
+      - signature électronique posée (UC17) : le dossier entre dans le
+        circuit d'instruction avec sa preuve de signature — il est figé
+        ensuite (`signer/` refuse tout dossier non BROUILLON/REJETE),
+        donc la signature doit avoir été posée AVANT la soumission ;
+      - dès lors que la SGI a publié sa convention tarifaire,
+        l'investisseur doit l'avoir acceptée avant soumission. Tant
+        qu'aucune convention n'est publiée, aucun accord n'est exigé.
     """
     if calculer_progression_pct(dossier) < 100:
         raise ValidationError(
             _("Le dossier ne peut être soumis : des champs obligatoires restent à renseigner.")
+        )
+
+    if not (dossier.type_signature and dossier.donnee_signature and dossier.date_signature):
+        raise ValidationError(
+            _("Le dossier ne peut être soumis sans signature électronique : "
+              "générez un code OTP et signez avant de soumettre.")
         )
 
     if not dossier.sgi.est_active:

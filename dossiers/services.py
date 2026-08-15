@@ -11,6 +11,8 @@ from django.utils import timezone
 from django.utils.crypto import constant_time_compare, pbkdf2
 from django.utils.translation import gettext_lazy as _
 
+from audit.models import JournalAudit
+from audit.services import journaliser
 from dossiers.models import ChampKYC, Dossier, EtapeKYC, ValeurChamp
 
 _DUREE_VALIDITE_OTP = timedelta(minutes=5)
@@ -160,7 +162,17 @@ def poser_signature_otp(dossier, code_otp, requete=None):
         # Relecture sous verrou : c'est l'état frais qui fait foi, pas
         # l'instance passée par l'appelant (potentiellement obsolète).
         dossier = Dossier.objects.select_for_update().get(pk=dossier.pk)
-        _poser_signature_sous_verrou(dossier, code_otp, requete)
+        try:
+            _poser_signature_sous_verrou(dossier, code_otp, requete)
+            erreur = None
+        except ValidationError as exc:
+            # La purge éventuelle de l'OTP (expiration) a déjà été
+            # persistée dans la transaction : laisser l'exception
+            # sortir du bloc `atomic` rollbackerait la purge. On la
+            # re-lève une fois le bloc engagé.
+            erreur = exc
+    if erreur is not None:
+        raise erreur
 
     dossier.refresh_from_db()
     return {
@@ -215,6 +227,29 @@ def _poser_signature_sous_verrou(dossier, code_otp, requete):
         "type_signature", "donnee_signature", "date_signature",
         "ip_signature", "otp_hash", "otp_expiration",
     ])
+
+    # La pose de signature est l'événement légal du dossier (preuve,
+    # horodatage, IP) : il doit figurer dans la même transaction que
+    # la preuve pour ne laisser aucun « trou » d'audit.
+    journaliser(
+        dossier.utilisateur,
+        JournalAudit.Action.POSE_SIGNATURE,
+        "Dossier",
+        str(dossier.pk),
+        avant={
+            "type_signature": "",
+            "date_signature": None,
+            "ip_signature": None,
+        },
+        apres={
+            "type_signature": dossier.type_signature,
+            "donnee_signature": dossier.donnee_signature,
+            "date_signature": dossier.date_signature.isoformat() if dossier.date_signature else None,
+            "ip_signature": dossier.ip_signature,
+        },
+        requete=requete,
+    )
+
 
 
 def _purger_otp(dossier):

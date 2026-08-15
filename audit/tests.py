@@ -13,6 +13,7 @@ from audit.models import JournalAudit
 from audit.services import journaliser
 from comptes.models import Role, Utilisateur
 from dossiers.models import Dossier, ValeurChamp
+from dossiers.tests import _signer_dossier
 from dossiers.workflow import transiter
 from sgi.models import SGI
 
@@ -42,6 +43,7 @@ class JournalisationTransitionTests(APITestCase):
 
     def test_transition_par_le_workflow_genere_une_trace(self):
         self._remplir_complet()
+        _signer_dossier(self.dossier)
         transiter(self.dossier, Dossier.Statut.SOUMIS, utilisateur=self.investisseur)
 
         trace = JournalAudit.objects.filter(
@@ -67,6 +69,7 @@ class JournalisationTransitionTests(APITestCase):
 
     def test_chronologie_des_transitions_completes(self):
         self._remplir_complet()
+        _signer_dossier(self.dossier)
         transiter(self.dossier, Dossier.Statut.SOUMIS, utilisateur=self.investisseur)
         transiter(
             self.dossier, Dossier.Statut.EN_INSTRUCTION,

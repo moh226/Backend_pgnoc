@@ -1,6 +1,7 @@
 import uuid
 from datetime import date
 
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.files.storage import default_storage
 from django.db.models import Prefetch, Q
@@ -25,6 +26,15 @@ from dossiers.serializers import (
     EtapeKYCSerializer, ValeurChampSerializer, TeleversementFichierSerializer,
     SignerDossierSerializer, SoumettreDossierSerializer,
 )
+
+
+def _est_uuid_valide(valeur):
+    """True si `valeur` est un UUID bien formé (évite un 500 sur filtre)."""
+    try:
+        uuid.UUID(str(valeur))
+        return True
+    except (ValueError, AttributeError):
+        return False
 
 
 @extend_schema_view(
@@ -59,9 +69,17 @@ class EtapeKYCListAPIView(generics.ListAPIView):
             raise drf_serializers.ValidationError(
                 {"sgi": "Le paramètre de requête `sgi` est obligatoire."}
             )
+        if not _est_uuid_valide(sgi_id):
+            raise drf_serializers.ValidationError(
+                {"sgi": "Le paramètre `sgi` doit être un identifiant UUID valide."}
+            )
 
         return (
-            EtapeKYC.objects.filter(actif=True, sgi_id=sgi_id)
+            EtapeKYC.objects.filter(
+                actif=True,
+                sgi_id=sgi_id,
+                sgi__est_active=True,
+            )
             .prefetch_related(
                 Prefetch("champs", queryset=ChampKYC.objects.filter(actif=True))
             )
@@ -362,18 +380,20 @@ class DossierGenererOtpAPIView(DossierProprietaireMixin, generics.GenericAPIView
 
     Le code (6 chiffres, valable 5 minutes) n'est jamais stocké en clair
     : seul son hash PBKDF2 est conservé. En production, le code partirait
-    par SMS/email (canal hors-bande) ; l'API le renvoie en clair pour le
-    développement.
+    par SMS/email (canal hors-bande) ; l'API ne le renvoie en clair que
+    quand `DEBUG=True` (développement/démo). Limité en débit (scope
+    `otp`) pour ralentir un éventuel usage abusif.
     """
 
     permission_classes = (permissions.IsAuthenticated, EstInvestisseur)
+    throttle_scope = "otp"
 
     serializer_class = drf_serializers.Serializer
 
     @extend_schema(responses={200: inline_serializer(
         "CodeOtp",
         {
-            "code": drf_serializers.CharField(),
+            "code": drf_serializers.CharField(required=False, allow_null=True),
             "expiration": drf_serializers.DateTimeField(),
         },
     )})
@@ -383,7 +403,12 @@ class DossierGenererOtpAPIView(DossierProprietaireMixin, generics.GenericAPIView
             return conflit
         code = generer_code_otp(dossier)
         return Response(
-            {"code": code, "expiration": dossier.otp_expiration},
+            {
+                # En production, le code est acheminé par un canal
+                # hors-bande (SMS/email) : jamais renvoyé en clair.
+                "code": code if settings.DEBUG else None,
+                "expiration": dossier.otp_expiration,
+            },
             status=status.HTTP_200_OK,
         )
 
@@ -401,6 +426,7 @@ class DossierSignerAPIView(DossierProprietaireMixin, generics.GenericAPIView):
 
     serializer_class = SignerDossierSerializer
     permission_classes = (permissions.IsAuthenticated, EstInvestisseur)
+    throttle_scope = "otp"
 
     def post(self, request, dossier_pk):
         dossier = self.get_dossier()

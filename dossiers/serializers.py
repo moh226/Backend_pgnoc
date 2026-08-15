@@ -44,15 +44,33 @@ class ValeurChampSerializer(serializers.ModelSerializer):
         read_only_fields = ("id", "fichier", "commentaire_agent", "est_corrige", "date_maj")
 
     def validate_champ(self, champ):
-        """Le champ doit appartenir à une étape de la SGI du dossier concerné."""
+        """Le champ doit appartenir à une étape ACTIVE de la SGI du dossier concerné."""
         dossier = self.context["dossier"]
         if champ.etape.sgi_id != dossier.sgi_id:
             raise serializers.ValidationError("Ce champ n'appartient pas à la SGI de ce dossier.")
+        if not champ.actif or not champ.etape.actif:
+            raise serializers.ValidationError(
+                "Ce champ a été désactivé par la SGI : il n'est plus saisissable."
+            )
         if champ.type == ChampKYC.TypeChamp.FICHIER:
             raise serializers.ValidationError(
                 "Un champ FICHIER se remplit via l'endpoint de téléversement dédié."
             )
         return champ
+
+    def validate_valeur(self, valeur):
+        """Normalise les valeurs complexes vers leur format de stockage.
+
+        CHOIX_MULTIPLE accepte aussi bien une liste JSON native qu'une
+        chaîne JSON : les deux représentent la même donnée et doivent
+        produire le même enregistrement (sinon `json.loads` échouerait
+        sur la trace Python d'une liste, en 400 trompeur).
+        """
+        if isinstance(valeur, list):
+            import json as module_json
+
+            return module_json.dumps(valeur)
+        return valeur
 
 
 class DossierListSerializer(serializers.ModelSerializer):
@@ -154,6 +172,7 @@ class TeleversementFichierSerializer(serializers.Serializer):
         b"\x47\x49\x46\x38": "gif",
         b"\x52\x49\x46\x46": "webp",
         b"\x50\x4b\x03\x04": "zip",  # docx, xlsx, odt… (conteneurs ZIP)
+        b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1": "ole2",  # .doc/.xls réels (OLE2)
     }
     _CORRESPONDANCES = {
         "pdf": {"pdf"},
@@ -161,7 +180,8 @@ class TeleversementFichierSerializer(serializers.Serializer):
         "jpg": {"jpg", "jpeg"},
         "gif": {"gif"},
         "webp": {"webp"},
-        "zip": {"docx", "doc", "xlsx", "xls", "odt", "ods", "zip"},
+        "zip": {"docx", "xlsx", "odt", "ods", "zip"},
+        "ole2": {"doc", "xls"},
     }
 
     champ = serializers.PrimaryKeyRelatedField(

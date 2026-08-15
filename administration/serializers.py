@@ -110,5 +110,9 @@ class UtilisateurAdminSerializer(serializers.ModelSerializer):
         return utilisateur
 
     def update(self, instance, validated_data):
-        validated_data.pop("mot_de_passe", None)
+        if "mot_de_passe" in validated_data:
+            raise serializers.ValidationError({
+                "mot_de_passe": "Le mot de passe n'est pas modifiable via "
+                                "cet endpoint : seule la création l'accepte.",
+            })
         return self._appliquer(instance, validated_data)

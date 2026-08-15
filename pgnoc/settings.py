@@ -277,6 +277,11 @@ REST_FRAMEWORK = {
     # table d'un coup. Taille de page surchargeable par variable d'env.
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": config("DRF_PAGE_SIZE", default=25, cast=int),
+    # Le client peut demander une taille de page explicite (`?page_size=50`),
+    # bornée par PageNumberPagination (max 100). Sans paramètre, c'est
+    # `PAGE_SIZE` qui s'applique.
+    "PAGE_SIZE_QUERY_PARAM": "page_size",
+    "MAX_PAGE_SIZE": 100,
 
     # Limitation de débit (throttling). On s'appuie sur ScopedRateThrottle :
     # seules les vues déclarant un `throttle_scope` sont limitées (login,
@@ -289,6 +294,7 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_RATES": {
         "connexion": config("DRF_THROTTLE_LOGIN", default="5/min"),
         "inscription": config("DRF_THROTTLE_REGISTER", default="10/hour"),
+        "otp": config("DRF_THROTTLE_OTP", default="10/min"),
     },
 }
 

@@ -21,6 +21,7 @@ from dossiers.models import Dossier, ValeurChamp
 from dossiers.permissions import PeutAccederAuDossier
 from dossiers.serializers import DossierDetailSerializer
 from dossiers.workflow import transiter
+from notifications.services import notifier_commentaire_agent
 
 
 def _recuperer_dossier_autorise(request, view, dossier_pk):
@@ -128,6 +129,10 @@ class ValeurChampCommenterAPIView(generics.GenericAPIView):
             apres={"commentaire_agent": valeur.commentaire_agent, "dossier": str(dossier.pk)},
             requete=request,
         )
+
+        # UC09 : l'investisseur doit être alerté de la demande de
+        # correction — il ne peut pas deviner qu'il doit revenir.
+        notifier_commentaire_agent(dossier, valeur, request.user)
 
         return Response(
             {"id": valeur.id, "commentaire_agent": valeur.commentaire_agent},

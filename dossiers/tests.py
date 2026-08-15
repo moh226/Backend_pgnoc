@@ -11,6 +11,7 @@ import copy
 from datetime import timedelta
 
 from django.core.exceptions import ValidationError
+from django.test import override_settings
 from django.urls import reverse
 from django.utils import timezone
 from rest_framework import status
@@ -21,6 +22,17 @@ from dossiers.models import ChampKYC, Dossier, EtapeKYC, ValeurChamp
 from dossiers.services import calculer_progression_pct, generer_code_otp, poser_signature_otp
 from dossiers.workflow import TRANSITIONS, transiter
 from sgi.models import SGI
+
+
+def _signer_dossier(dossier):
+    """Pose la signature OTP comme le ferait l'API avant la soumission (UC17).
+
+    Utilisé par les helpers de soumission des tests : depuis que la
+    soumission EXIGE une signature (machine à états), tout dossier
+    soumis doit être passé par cette étape d'abord.
+    """
+    code = generer_code_otp(dossier)
+    poser_signature_otp(dossier, code)
 
 
 def _configurer_parcours(sgi):
@@ -138,6 +150,10 @@ class ProgressionRecalculAPITests(APITestCase):
         )
 
 
+@override_settings(
+    DEBUG=True,  # seul le mode dev renvoie le code OTP (le prod ne le montre jamais)
+    THROTTLE_RATES={"otp": "10000/min"},  # le cache de débit est partagé sur tout le run
+)
 class SoumissionAPITests(APITestCase):
     """1C : UC10 — endpoint de soumission d'un dossier."""
 
@@ -174,6 +190,7 @@ class SoumissionAPITests(APITestCase):
 
     def test_soumission_complete_reussit(self):
         self._remplir_complet()
+        _signer_dossier(self.dossier)
         reponse = self.client.post(self.url)
         self.assertEqual(reponse.status_code, status.HTTP_200_OK)
         self.dossier.refresh_from_db()
@@ -260,19 +277,36 @@ class SoumissionAPITests(APITestCase):
         self.assertEqual(reponse.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_la_soumission_n_accepte_plus_de_signature_en_clair(self):
-        """L'ancien flux (texte libre) est fermé : la donnée est ignorée."""
+        """L'ancien flux (texte libre) est fermé : la donnée du corps est ignorée."""
         self._remplir_complet()
         reponse = self.client.post(
             self.url,
             {"type_signature": Dossier.TypeSignature.OTP, "donnee_signature": "trx-2026"},
         )
-        self.assertEqual(reponse.status_code, status.HTTP_200_OK)
+        # Le corps ne peut pas poser la signature : sans preuve serveur
+        # (flux OTP, UC17), la soumission est refusée, quel que soit le
+        # contenu falsifié du corps.
+        self.assertEqual(reponse.status_code, status.HTTP_400_BAD_REQUEST)
         self.dossier.refresh_from_db()
         self.assertEqual(self.dossier.type_signature, "")
         self.assertEqual(self.dossier.donnee_signature, "")
 
+        # Le seul chemin : générer le code puis signer (preuve serveur).
+        url_otp = reverse("dossiers:dossier-generer-otp",
+                          kwargs={"dossier_pk": self.dossier.pk})
+        url_signer = reverse("dossiers:dossier-signer",
+                             kwargs={"dossier_pk": self.dossier.pk})
+        code = self.client.post(url_otp).data["code"]
+        self.client.post(url_signer, {"otp_code": code}, format="json")
+        reponse = self.client.post(self.url)
+        self.assertEqual(reponse.status_code, status.HTTP_200_OK)
+        self.dossier.refresh_from_db()
+        self.assertEqual(self.dossier.type_signature, Dossier.TypeSignature.OTP)
+        self.assertNotEqual(self.dossier.donnee_signature, "trx-2026")
+
     def test_resoumission_apres_soumission_refusee(self):
         self._remplir_complet()
+        _signer_dossier(self.dossier)
         self.client.post(self.url)
         reponse = self.client.post(self.url)
         self.assertEqual(reponse.status_code, status.HTTP_409_CONFLICT)
@@ -320,6 +354,7 @@ class CircuitAgentAPITests(APITestCase):
             dossier=self.dossier, champ=self.champs["f"], fichier="dossiers/x/y.pdf",
         )
         self.dossier.refresh_from_db()
+        _signer_dossier(self.dossier)
         transiter(self.dossier, Dossier.Statut.SOUMIS)
 
     def _url(self, name):
@@ -360,66 +395,33 @@ class CircuitAgentAPITests(APITestCase):
             status.HTTP_409_CONFLICT,
         )
 
-    def test_validation_sans_signature_refusee_puis_ok(self):
+    def test_validation_necessite_signature_complete_puis_ok(self):
         self._soumettre()
         self.client.force_authenticate(self.agent)
         self.client.post(self._url("dossiers:dossier-prendre-en-charge"))
 
+        # Garde-fou défensif : depuis que la soumission exige la
+        # signature (UC17), un dossier EN_INSTRUCTION est toujours signé
+        # en base ; seuls une corruption ou un effacement manuel peuvent
+        # retirer la preuve. La décision doit rester refusée tant que la
+        # preuve est incomplète.
+        self.dossier.type_signature = ""
+        self.dossier.donnee_signature = ""
+        self.dossier.date_signature = None
+        self.dossier.save(
+            update_fields=["type_signature", "donnee_signature", "date_signature"]
+        )
         rep = self.client.post(self._url("dossiers:dossier-valider"))
         self.assertEqual(rep.status_code, status.HTTP_400_BAD_REQUEST)
 
-        # Le dossier SOUMIS est figé : la signature doit avoir été posée
-        # AVANT la soumission. On vérifie le circuit complet sur un
-        # second dossier signé dans les règles.
-        dossier_signe = Dossier.objects.create(
-            utilisateur=self.investisseur, sgi=self.sgi,
-        )
-        for champ, valeur in [
-            (self.champs["p"], "Morale"),
-            (self.champs["a"], "Awa"),
-            (self.champs["b"], "RCCM-123"),
-        ]:
-            ValeurChamp.objects.create(
-                dossier=dossier_signe, champ=champ, valeur=valeur,
-            )
-        ValeurChamp.objects.create(
-            dossier=dossier_signe, champ=self.champs["f"], fichier="dossiers/x/y.pdf",
-        )
-        transiter(dossier_signe, Dossier.Statut.SOUMIS)
-        transiter(dossier_signe, Dossier.Statut.EN_INSTRUCTION, agent=self.agent)
-        rep = self.client.post(
-            reverse("dossiers:dossier-valider",
-                    kwargs={"dossier_pk": dossier_signe.pk}),
-        )
-        self.assertEqual(rep.status_code, status.HTTP_400_BAD_REQUEST)
-
-        # Signature OTP posée (via la base, comme le ferait l'API avant
-        # soumission), puis nouveau dossier complet signé → validation OK.
-        dossier_signable = Dossier.objects.create(
-            utilisateur=self.investisseur, sgi=self.sgi,
-        )
-        for champ, valeur in [
-            (self.champs["p"], "Morale"),
-            (self.champs["a"], "Awa"),
-            (self.champs["b"], "RCCM-123"),
-        ]:
-            ValeurChamp.objects.create(
-                dossier=dossier_signable, champ=champ, valeur=valeur,
-            )
-        ValeurChamp.objects.create(
-            dossier=dossier_signable, champ=self.champs["f"], fichier="dossiers/x/y.pdf",
-        )
-        code = generer_code_otp(dossier_signable)
-        poser_signature_otp(dossier_signable, code)
-        transiter(dossier_signable, Dossier.Statut.SOUMIS)
-        transiter(dossier_signable, Dossier.Statut.EN_INSTRUCTION, agent=self.agent)
-        rep = self.client.post(
-            reverse("dossiers:dossier-valider",
-                    kwargs={"dossier_pk": dossier_signable.pk}),
-        )
+        # Preuve restaurée (comme la signature initiale posée avant
+        # soumission) → la décision passe.
+        code = generer_code_otp(self.dossier)
+        poser_signature_otp(self.dossier, code)
+        rep = self.client.post(self._url("dossiers:dossier-valider"))
         self.assertEqual(rep.status_code, status.HTTP_200_OK)
-        dossier_signable.refresh_from_db()
-        self.assertEqual(dossier_signable.statut, Dossier.Statut.VALIDE)
+        self.dossier.refresh_from_db()
+        self.assertEqual(self.dossier.statut, Dossier.Statut.VALIDE)
 
     def test_rejet_necessite_motif_puis_rejette(self):
         self._soumettre()
@@ -614,6 +616,10 @@ class FileAttenteFiltresTests(APITestCase):
         self.assertEqual(str(rep.data["results"][0]["sgi"]), str(self.sgi.pk))
 
 
+@override_settings(
+    DEBUG=True,  # le code OTP n'est renvoyé qu'en mode dev (flux démo)
+    THROTTLE_RATES={"otp": "10000/min"},  # cache de débit partagé sur le run
+)
 class CycleCompletAPITests(APITestCase):
     """1H : bout-en-bout du cycle de vie complet, uniquement via l'API."""
 
@@ -778,6 +784,7 @@ class MachineAEtatsTests(APITestCase):
 
     def test_soumission_apres_remplissage_complet(self):
         self._progression_100()
+        _signer_dossier(self.dossier)
         transiter(self.dossier, Dossier.Statut.SOUMIS)
         self.dossier.refresh_from_db()
         self.assertEqual(self.dossier.statut, Dossier.Statut.SOUMIS)
@@ -786,6 +793,7 @@ class MachineAEtatsTests(APITestCase):
 
     def test_saut_illegal_so_umis_vers_valide_refuse(self):
         self._progression_100()
+        _signer_dossier(self.dossier)
         transiter(self.dossier, Dossier.Statut.SOUMIS)
         with self.assertRaises(ValidationError):
             transiter(self.dossier, Dossier.Statut.VALIDE, agent=self.agent)
@@ -811,6 +819,7 @@ class MachineAEtatsTests(APITestCase):
 
     def test_prise_en_charge_agent_etrangere_refusee(self):
         self._progression_100()
+        _signer_dossier(self.dossier)
         transiter(self.dossier, Dossier.Statut.SOUMIS)
         with self.assertRaises(ValidationError):
             transiter(self.dossier, Dossier.Statut.EN_INSTRUCTION, agent=self.agent_autre_sgi)
@@ -820,6 +829,7 @@ class MachineAEtatsTests(APITestCase):
 
     def test_prise_en_charge_valide(self):
         self._progression_100()
+        _signer_dossier(self.dossier)
         transiter(self.dossier, Dossier.Statut.SOUMIS)
         transiter(self.dossier, Dossier.Statut.EN_INSTRUCTION, agent=self.agent)
         self.dossier.refresh_from_db()
@@ -829,8 +839,16 @@ class MachineAEtatsTests(APITestCase):
 
     def test_decision_validation_necessite_signature(self):
         self._progression_100()
+        _signer_dossier(self.dossier)
         transiter(self.dossier, Dossier.Statut.SOUMIS)
         transiter(self.dossier, Dossier.Statut.EN_INSTRUCTION, agent=self.agent)
+        # Preuve retirée en base (corruption) → la décision est refusée.
+        self.dossier.type_signature = ""
+        self.dossier.donnee_signature = ""
+        self.dossier.date_signature = None
+        self.dossier.save(
+            update_fields=["type_signature", "donnee_signature", "date_signature"]
+        )
         with self.assertRaises(ValidationError):
             transiter(self.dossier, Dossier.Statut.VALIDE, agent=self.agent)
         # Signature OTP posée dans les règles (preuve serveur) → OK
@@ -843,6 +861,7 @@ class MachineAEtatsTests(APITestCase):
 
     def test_rejet_necessite_motif(self):
         self._progression_100()
+        _signer_dossier(self.dossier)
         transiter(self.dossier, Dossier.Statut.SOUMIS)
         transiter(self.dossier, Dossier.Statut.EN_INSTRUCTION, agent=self.agent)
         with self.assertRaises(ValidationError):
@@ -854,6 +873,7 @@ class MachineAEtatsTests(APITestCase):
 
     def test_resoumission_apres_rejet_incrmente_version(self):
         self._progression_100()
+        _signer_dossier(self.dossier)
         transiter(self.dossier, Dossier.Statut.SOUMIS)
         transiter(self.dossier, Dossier.Statut.EN_INSTRUCTION, agent=self.agent)
         transiter(self.dossier, Dossier.Statut.REJETE, agent=self.agent, motif_rejet="Justificatif abimé")

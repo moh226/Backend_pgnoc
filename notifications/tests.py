@@ -6,6 +6,7 @@ from rest_framework.test import APITestCase
 
 from comptes.models import Role, Utilisateur
 from dossiers.models import ChampKYC, Dossier, EtapeKYC, ValeurChamp
+from dossiers.tests import _signer_dossier
 from dossiers.workflow import transiter
 from notifications.models import Notification
 from sgi.models import SGI
@@ -43,6 +44,7 @@ class GenerationNotificationsTests(APITestCase):
         ValeurChamp.objects.create(dossier=self.dossier, champ=champ, valeur="Awa")
 
     def test_soumission_notifie_les_agents_et_admin_de_la_sgi(self):
+        _signer_dossier(self.dossier)
         transiter(self.dossier, Dossier.Statut.SOUMIS, utilisateur=self.investisseur)
 
         notifs = Notification.objects.filter(
@@ -58,6 +60,7 @@ class GenerationNotificationsTests(APITestCase):
         self.assertIn("soumis", notifs.first().message.lower())
 
     def test_transition_instruction_notifie_l_investisseur(self):
+        _signer_dossier(self.dossier)
         transiter(self.dossier, Dossier.Statut.SOUMIS, utilisateur=self.investisseur)
         transiter(
             self.dossier, Dossier.Statut.EN_INSTRUCTION,
@@ -67,6 +70,7 @@ class GenerationNotificationsTests(APITestCase):
         self.assertIn("instruction", notification.message.lower())
 
     def test_rejet_notifie_l_investisseur_avec_motif(self):
+        _signer_dossier(self.dossier)
         transiter(self.dossier, Dossier.Statut.SOUMIS, utilisateur=self.investisseur)
         transiter(
             self.dossier, Dossier.Statut.EN_INSTRUCTION,

@@ -17,7 +17,7 @@ from rest_framework.test import APITestCase
 from audit.models import JournalAudit
 from comptes.models import Role, Utilisateur
 from dossiers.models import Dossier, ValeurChamp
-from dossiers.tests import _configurer_parcours
+from dossiers.tests import _configurer_parcours, _signer_dossier
 from sgi.models import ConventionTarifaire, InformationPresentation, SGI
 
 MEDIA_TEMPORAIRE = tempfile.mkdtemp()
@@ -197,6 +197,7 @@ class AcceptationConventionTests(APITestCase):
         self._publier_convention()
         self.client.post(self.url)
         self._renseigner_parcours()
+        _signer_dossier(self.dossier)
         from dossiers.workflow import transiter
         transiter(self.dossier, Dossier.Statut.SOUMIS)
         reponse = self.client.post(self.url)
@@ -212,6 +213,7 @@ class AcceptationConventionTests(APITestCase):
     def test_soumission_bloquee_sans_accord(self):
         self._publier_convention()
         self._renseigner_parcours()
+        _signer_dossier(self.dossier)
         reponse = self.client.post(
             reverse("dossiers:dossier-soumettre", kwargs={"dossier_pk": self.dossier.pk}),
         )
@@ -222,6 +224,7 @@ class AcceptationConventionTests(APITestCase):
         self._publier_convention()
         self._renseigner_parcours()
         self.client.post(self.url)
+        _signer_dossier(self.dossier)
         reponse = self.client.post(
             reverse("dossiers:dossier-soumettre", kwargs={"dossier_pk": self.dossier.pk}),
         )

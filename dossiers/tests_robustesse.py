@@ -13,6 +13,7 @@ from rest_framework.test import APITestCase
 from comptes.models import Role, Utilisateur
 from dossiers.models import ChampKYC, Dossier, EtapeKYC, ValeurChamp
 from dossiers.services import calculer_progression_pct
+from dossiers.tests import _signer_dossier
 from dossiers.workflow import transiter
 from sgi.models import SGI
 
@@ -222,6 +223,7 @@ class CycleRejetCorrectionTests(APITestCase):
         ValeurChamp.objects.create(
             dossier=self.dossier, champ=self.champ, valeur="Awa",
         )
+        _signer_dossier(self.dossier)
         transiter(self.dossier, Dossier.Statut.SOUMIS)
         transiter(self.dossier, Dossier.Statut.EN_INSTRUCTION, agent=self.agent)
         transiter(

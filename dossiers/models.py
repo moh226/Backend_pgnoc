@@ -218,8 +218,23 @@ class ChampKYC(models.Model):
                 raise ValidationError({"champ_parent": _("Le champ parent doit appartenir à la même étape.")})
             if not self.valeur_declencheur:
                 raise ValidationError(
-                    {"valeur_declencheur": _("Une valeur déclencheur est requise si un champ parent est défini.")}
+                    {"champ_parent": _("Une valeur déclencheur est requise si un champ parent est défini.")}
                 )
+            # Détection de cycle : A→B et B→A créent une règle
+            # conditionnelle contradictoire (un champ exigerait sa
+            # propre valeur déclencheur). On remonte la chaîne en
+            # profondeur pour refuser tout bouclage, pas seulement
+            # l'auto-référence.
+            vue = set()
+            parent = self.champ_parent
+            while parent is not None and parent.pk not in vue:
+                if parent.pk == self.pk:
+                    raise ValidationError(
+                        {"champ_parent": _("Ce champ ne peut pas être son propre parent "
+                                           "par l'intermédiaire d'une chaîne conditionnelle.")}
+                    )
+                vue.add(parent.pk)
+                parent = parent.champ_parent
         elif self.valeur_declencheur:
             raise ValidationError(
                 {"valeur_declencheur": _("Une valeur déclencheur nécessite un champ parent.")}
@@ -390,10 +405,8 @@ class Dossier(models.Model):
 
     def clean(self):
         """Vérifie la cohérence des transitions de statut et de la signature."""
-        if self.statut != self.Statut.BROUILLON and self.etape_courante_id is not None:
-            # etape_courante ne sert que pendant la saisie en brouillon ;
-            # une fois soumis, la progression par étape n'a plus d'usage.
-            pass  # toléré : on ne force pas sa remise à None pour l'historique
+        # `etape_courante` ne sert que pendant la saisie en brouillon ;
+        # une fois soumis, sa valeur historique n'a plus d'usage.
 
         if self.statut == self.Statut.VALIDE and not self.type_signature:
             raise ValidationError(
@@ -537,7 +550,7 @@ class ValeurChamp(models.Model):
     def clean(self):
         """Valide la cohérence type de champ / contenu de la valeur."""
         if self.champ.type == ChampKYC.TypeChamp.FICHIER:
-            if not self.fichier:
+            if self.champ.obligatoire and not self.fichier:
                 raise ValidationError({"fichier": _("Une référence de fichier est requise pour ce champ.")})
             if self.valeur:
                 raise ValidationError({"valeur": _("Le champ `valeur` est inutilisé pour un champ FICHIER.")})
