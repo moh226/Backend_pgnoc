@@ -37,6 +37,7 @@ class JournalAudit(models.Model):
         COMMENTAIRE_AGENT = "COMMENTAIRE_AGENT", _("Commentaire d'un agent")
         ACCEPTATION_CONVENTION = "ACCEPTATION_CONVENTION", _("Acceptation de la convention tarifaire")
         POSE_SIGNATURE = "POSE_SIGNATURE", _("Signature électronique posée")
+        UPLOAD_SELFIE = "UPLOAD_SELFIE", _("Selfie de vérification téléversé")
         CREATION_AGENT = "CREATION_AGENT", _("Création d'un agent SGI")
         MODIFICATION_AGENT = "MODIFICATION_AGENT", _("Modification d'un agent SGI")
         MODIFICATION_CONVENTION = "MODIFICATION_CONVENTION", _("Publication de la convention tarifaire")

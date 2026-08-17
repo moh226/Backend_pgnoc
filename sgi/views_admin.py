@@ -22,7 +22,11 @@ from audit.models import JournalAudit
 from audit.services import journaliser
 from comptes.permissions import EstAdminSGI
 from sgi.models import ConventionTarifaire, InformationPresentation
-
+from sgi.serializers import (
+    PresentationAdminEntreeSerializer,
+    PresentationSectionsSerializer,
+    sections_de_presentation,
+)
 
 # Signature binaire d'un fichier PDF (« %PDF »).
 _MAGIC_PDF = b"\x25\x50\x44\x46"
@@ -40,17 +44,6 @@ _CONVENTION_SORTIE = inline_serializer(
         "titre": serializers.CharField(),
         "fichier": serializers.CharField(),
         "url_signee": serializers.CharField(),
-    },
-)
-_PRESENTATION_ENTREE = inline_serializer(
-    "PresentationEntree",
-    {"contenu": serializers.CharField(required=False)},
-)
-_PRESENTATION_SORTIE = inline_serializer(
-    "Presentation",
-    {
-        "contenu": serializers.CharField(),
-        "date_publication": serializers.DateTimeField(allow_null=True),
     },
 )
 
@@ -182,43 +175,81 @@ class ConventionTarifaireAdminAPIView(generics.GenericAPIView):
 
 
 class PresentationAdminAPIView(generics.GenericAPIView):
-    """Public / met à jour la présentation (contenu marketing) de MA SGI.
+    """Lit / met à jour la présentation structurée (sections « À propos ») de MA SGI.
 
     GET /api/sgi/admin/presentation/
-    PUT /api/sgi/admin/presentation/  (JSON : contenu)
+    PUT /api/sgi/admin/presentation/  (JSON complet, toute section)
+
+    La sauvegarde équivaut à la publication : elle est immédiatement
+    servie aux investisseurs. Les listes (activités, équipe, références)
+    sont remplacées intégralement quand leur clé est présente.
     """
 
     permission_classes = (permissions.IsAuthenticated, EstAdminSGI)
-    serializer_class = serializers.Serializer
+    serializer_class = PresentationAdminEntreeSerializer
 
-    @extend_schema(request=_PRESENTATION_ENTREE, responses={200: _PRESENTATION_SORTIE})
-    def get(self, request):
+    def _presentation(self, request):
         presentation, _ = _obtenir_ou_creer(
             InformationPresentation, sgi_id=request.user.sgi_id,
         )
-        return Response({
-            "contenu": presentation.contenu,
+        return presentation
+
+    def _sortie(self, presentation):
+        return {
+            **sections_de_presentation(presentation),
             "date_publication": presentation.date_publication,
-        })
+        }
 
-    @extend_schema(request=_PRESENTATION_ENTREE, responses={200: _PRESENTATION_SORTIE})
+    @extend_schema(
+        request=False,
+        responses={200: PresentationSectionsSerializer},
+    )
+    def get(self, request):
+        return Response(self._sortie(self._presentation(request)))
+
+    @extend_schema(
+        request=PresentationAdminEntreeSerializer,
+        responses={200: PresentationSectionsSerializer},
+    )
     def put(self, request):
-        presentation, _ = _obtenir_ou_creer(
-            InformationPresentation, sgi_id=request.user.sgi_id,
-        )
-        avant = {"contenu": presentation.contenu}
-        presentation.contenu = request.data.get("contenu", "")
-        presentation.save(update_fields=["contenu"])
+        presentation = self._presentation(request)
+        serializer = PresentationAdminEntreeSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        donnees = serializer.validated_data
+
+        avant = sections_de_presentation(presentation)
+        for champ in (
+            "forme_sociale", "date_creation_societe", "capital_social",
+            "numero_agrement", "date_agrement", "autorite_agrement",
+            "mission", "vision", "ancrage_regional",
+            "adresse", "telephone", "email_contact", "site_web",
+        ):
+            if champ in donnees:
+                setattr(presentation, champ, donnees[champ])
+        presentation.save()
+
+        self._remplacer_listes(presentation, "activites", donnees.get("activites"))
+        self._remplacer_listes(presentation, "membres", donnees.get("membres"))
+        self._remplacer_listes(presentation, "references", donnees.get("references"))
+
+        apres = sections_de_presentation(presentation)
         journaliser(
             request.user,
             JournalAudit.Action.MODIFICATION_PRESENTATION,
             "InformationPresentation",
             str(presentation.sgi_id),
             avant=avant,
-            apres={"contenu": presentation.contenu},
+            apres=apres,
             requete=request,
         )
-        return Response({
-            "contenu": presentation.contenu,
-            "date_publication": presentation.date_publication,
-        })
+        return Response(self._sortie(presentation))
+
+    @staticmethod
+    def _remplacer_listes(presentation, nom, elements):
+        """Écrit l'intégralité d'une liste ordonnée si elle est fournie."""
+        if elements is None:
+            return
+        relation = getattr(presentation, nom)
+        relation.all().delete()
+        for position, element in enumerate(elements):
+            relation.create(ordre=position, **element)

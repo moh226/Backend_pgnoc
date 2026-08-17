@@ -260,3 +260,77 @@ class CycleRejetCorrectionTests(APITestCase):
         valeur.refresh_from_db()
         self.assertTrue(valeur.est_corrige)
         self.assertTrue(valeur.fichier.endswith(".pdf"))
+
+    def _rejeter_en_instruction(self, motif="À corriger"):
+        _signer_dossier(self.dossier)
+        transiter(self.dossier, Dossier.Statut.SOUMIS)
+        transiter(self.dossier, Dossier.Statut.EN_INSTRUCTION, agent=self.agent)
+        transiter(
+            self.dossier, Dossier.Statut.REJETE, agent=self.agent,
+            motif_rejet=motif, utilisateur=self.agent,
+        )
+        self.assertEqual(self.dossier.statut, Dossier.Statut.REJETE)
+
+    def test_rejete_bloque_la_correction_d_un_champ_non_commentee(self):
+        """UC12 : après rejet, un champ jamais signalé ne peut plus être modifié."""
+        ValeurChamp.objects.create(
+            dossier=self.dossier, champ=self.champ, valeur="Awa",
+        )
+        self._rejeter_en_instruction()
+
+        self.client.force_authenticate(self.investisseur)
+        reponse = self.client.post(
+            reverse("dossiers:dossier-valeurs", kwargs={"dossier_pk": self.dossier.pk}),
+            {"champ": self.champ.pk, "valeur": "Awa Koné"},
+        )
+        self.assertEqual(reponse.status_code, status.HTTP_403_FORBIDDEN)
+        valeur = ValeurChamp.objects.get(dossier=self.dossier, champ=self.champ)
+        self.assertEqual(valeur.valeur, "Awa")
+        self.assertFalse(valeur.est_corrige)
+
+    def test_rejete_bloque_l_ajout_d_un_champ_jamais_rempli(self):
+        """Après rejet, on ne peut pas créer de valeur sur un champ non commenté."""
+        ValeurChamp.objects.create(
+            dossier=self.dossier, champ=self.champ, valeur="Awa",
+        )
+        champ_b = ChampKYC.objects.create(
+            etape=self.champ.etape, code="prenom", nom="Prénom",
+            type=ChampKYC.TypeChamp.TEXTE_COURT, obligatoire=False,
+        )
+        self._rejeter_en_instruction()
+
+        self.client.force_authenticate(self.investisseur)
+        reponse = self.client.post(
+            reverse("dossiers:dossier-valeurs", kwargs={"dossier_pk": self.dossier.pk}),
+            {"champ": champ_b.pk, "valeur": "Nouvelle valeur"},
+        )
+        self.assertEqual(reponse.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertFalse(
+            ValeurChamp.objects.filter(dossier=self.dossier, champ=champ_b).exists()
+        )
+
+    def test_rejete_bloque_l_upload_sur_un_champ_non_commentee(self):
+        """Après rejet, le remplacement de fichier exige aussi un retour d'agent."""
+        champ_fichier = ChampKYC.objects.create(
+            etape=self.champ.etape, code="cnib", nom="CNIB",
+            type=ChampKYC.TypeChamp.FICHIER, formats_acceptes="pdf",
+        )
+        ValeurChamp.objects.create(
+            dossier=self.dossier, champ=champ_fichier, fichier="dossiers/x/ancien.pdf",
+        )
+        ValeurChamp.objects.create(
+            dossier=self.dossier, champ=self.champ, valeur="Awa",
+        )
+        self._rejeter_en_instruction()
+
+        self.client.force_authenticate(self.investisseur)
+        reponse = self.client.post(
+            reverse("dossiers:dossier-valeur-fichier-upload",
+                    kwargs={"dossier_pk": self.dossier.pk}),
+            {"champ": champ_fichier.pk, "fichier": SimpleUploadedFile(
+                "cnib.pdf", b"%PDF-1.4 autre", content_type="application/pdf")},
+            format="multipart",
+        )
+        self.assertEqual(reponse.status_code, status.HTTP_403_FORBIDDEN)
+        valeur = ValeurChamp.objects.get(dossier=self.dossier, champ=champ_fichier)
+        self.assertEqual(valeur.fichier, "dossiers/x/ancien.pdf")

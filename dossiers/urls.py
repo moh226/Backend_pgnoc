@@ -8,6 +8,7 @@ from dossiers.views import (
     DossierSignerAPIView, DossierSoumettreAPIView,
     EtapeKYCListAPIView, ValeurChampListCreateAPIView,
     ValeurChampFichierUploadAPIView, ValeurChampFichierUrlAPIView,
+    ValeurSelfieAuthenticiteAPIView,
 )
 from dossiers.views_agent import (
     DossierPrendreEnChargeAPIView, DossierValiderAPIView, DossierRejeterAPIView,
@@ -92,6 +93,12 @@ urlpatterns = [
         "dossiers/<uuid:dossier_pk>/valeurs/<uuid:valeur_pk>/url/",
         ValeurChampFichierUrlAPIView.as_view(),
         name="dossier-valeur-fichier-url",
+    ),
+
+    path(
+        "dossiers/<uuid:dossier_pk>/valeurs/<uuid:valeur_pk>/authenticite/",
+        ValeurSelfieAuthenticiteAPIView.as_view(),
+        name="dossier-valeur-selfie-authenticite",
     ),
 
     path("admin/etapes-kyc/",

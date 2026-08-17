@@ -4,7 +4,36 @@ from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.response import Response
 
-from dossiers.models import Dossier
+from dossiers.models import Dossier, ValeurChamp
+
+
+class ChampCorrigeableMixin:
+    """En REJETE, seuls les champs signalés par l'agent sont corrigeables (UC12).
+
+    L'investisseur peut corriger un dossier rejeté, mais uniquement sur
+    les champs que l'agent a commentés lors de la relecture : les
+    autres champs ont été jugés conformes et restent figés.
+    """
+
+    def verifier_champ_corrigeable(self, dossier, champ):
+        """Retourne une Response 403 si le champ n'est pas corrigeable, sinon None.
+
+        Utilisation : `if conflit := self.verifier_champ_corrigeable(dossier, champ): return conflit`
+        """
+        if dossier.statut != Dossier.Statut.REJETE:
+            return None
+        existante = ValeurChamp.objects.filter(dossier=dossier, champ=champ).first()
+        if existante and existante.commentaire_agent:
+            return None
+        return Response(
+            {
+                "detail": (
+                    "Dossier rejeté : seuls les champs signalés par l'agent "
+                    "(avec un retour de relecture) peuvent être corrigés."
+                ),
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
 
 
 class DossierProprietaireMixin:

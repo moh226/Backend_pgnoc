@@ -1,3 +1,4 @@
+import hashlib
 import uuid
 from datetime import date
 
@@ -16,10 +17,13 @@ from rest_framework.response import Response
 from audit.models import JournalAudit
 from audit.services import journaliser
 from comptes.permissions import EstInvestisseur
-from dossiers.mixins import DossierProprietaireMixin
+from dossiers.mixins import ChampCorrigeableMixin, DossierProprietaireMixin
 from dossiers.models import ChampKYC, Dossier, EtapeKYC, ValeurChamp
 from dossiers.permissions import PeutAccederAuDossier
-from dossiers.services import generer_code_otp, poser_signature_otp, recalculer_progression
+from dossiers.services import (
+    generer_code_otp, poser_signature_otp, recalculer_progression,
+    signer_preuve_selfie, verifier_preuve_selfie,
+)
 from dossiers.workflow import transiter
 from dossiers.serializers import (
     DossierCreationSerializer, DossierDetailSerializer, DossierListSerializer,
@@ -207,15 +211,18 @@ class DossierDetailAPIView(generics.RetrieveAPIView):
     )
 
 
-class ValeurChampListCreateAPIView(DossierProprietaireMixin, generics.ListCreateAPIView):
+class ValeurChampListCreateAPIView(
+    ChampCorrigeableMixin, DossierProprietaireMixin, generics.ListCreateAPIView
+):
     """Liste/écrit les valeurs de champs KYC d'un dossier (UC04).
 
     GET  /api/dossiers/dossiers/<dossier_pk>/valeurs/
     POST /api/dossiers/dossiers/<dossier_pk>/valeurs/
 
     Seul l'investisseur propriétaire peut écrire, uniquement tant que
-    le dossier est en BROUILLON. Un POST sur un champ déjà rempli fait
-    un upsert (mise à jour), pas un doublon.
+    le dossier est en BROUILLON ou REJETE (UC12). Un POST sur un champ
+    déjà rempli fait un upsert (mise à jour), pas un doublon. Après
+    rejet, seuls les champs commentés par l'agent sont corrigeables.
     """
 
     serializer_class = ValeurChampSerializer
@@ -232,6 +239,9 @@ class ValeurChampListCreateAPIView(DossierProprietaireMixin, generics.ListCreate
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         champ = serializer.validated_data["champ"]
+
+        if conflit := self.verifier_champ_corrigeable(dossier, champ):
+            return conflit
 
         existante = ValeurChamp.objects.filter(dossier=dossier, champ=champ).first()
         # Si l'agent avait commenté ce champ (demande de correction),
@@ -267,12 +277,19 @@ class ValeurChampListCreateAPIView(DossierProprietaireMixin, generics.ListCreate
 
 
 
-class ValeurChampFichierUploadAPIView(DossierProprietaireMixin, generics.GenericAPIView):
-    """Téléverse un justificatif vers MinIO pour un champ KYC de type FICHIER (UC05).
+class ValeurChampFichierUploadAPIView(
+    ChampCorrigeableMixin, DossierProprietaireMixin, generics.GenericAPIView
+):
+    """Téléverse un justificatif vers MinIO pour un champ KYC de type FICHIER
+    ou SELFIE (UC05 / preuve de vie).
 
     POST /api/dossiers/dossiers/<dossier_pk>/valeurs/fichier/
     Content-Type: multipart/form-data
     Champs : champ=<uuid>, fichier=<binaire>
+
+    Pour un champ SELFIE, la chaîne de preuve serveur est produite ici :
+    hash SHA-256 du contenu + horodatage serveur + signature HMAC (clé
+    serveur dédiée) — jamais envoyés ni modifiables par le client.
     """
 
     serializer_class = TeleversementFichierSerializer
@@ -287,7 +304,23 @@ class ValeurChampFichierUploadAPIView(DossierProprietaireMixin, generics.Generic
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         champ = serializer.validated_data["champ"]
+
+        if conflit := self.verifier_champ_corrigeable(dossier, champ):
+            return conflit
+
         fichier = serializer.validated_data["fichier"]
+
+        # Preuve de vie (SELFIE) : empreinte calculée par le serveur AVANT
+        # l'écriture en stockage — le contenu exact reçu fait foi.
+        est_selfie = champ.type == ChampKYC.TypeChamp.SELFIE
+        if est_selfie:
+            fichier.seek(0)
+            empreinte = hashlib.sha256(fichier.read()).hexdigest()
+            fichier.seek(0)
+            date_capture = timezone.now()
+        else:
+            empreinte = ""
+            date_capture = None
 
         # Nom de fichier généré côté serveur (jamais le nom d'origine
         # du client) : évite les collisions et toute tentative
@@ -309,6 +342,8 @@ class ValeurChampFichierUploadAPIView(DossierProprietaireMixin, generics.Generic
                 defaults={
                     "fichier": chemin_enregistre,
                     "valeur": "",
+                    "empreinte_sha256": empreinte,
+                    "date_capture": date_capture,
                     # Un remplacement après demande de correction doit
                     # rester visible de l'agent : on passe est_corrige à
                     # True quand un commentaire attend une relecture.
@@ -322,6 +357,33 @@ class ValeurChampFichierUploadAPIView(DossierProprietaireMixin, generics.Generic
             default_storage.delete(chemin_enregistre)
             raise drf_serializers.ValidationError(
                 exc.message_dict if hasattr(exc, "error_dict") else exc.messages
+            )
+
+        # Signature HMAC posée APRÈS création : le payload lie la
+        # référence du dossier, l'id de la valeur, le chemin stocké,
+        # l'empreinte et l'horodatage.
+        signature = ""
+        if est_selfie:
+            signature = signer_preuve_selfie(
+                dossier.reference, instance.id, chemin_enregistre,
+                empreinte, date_capture,
+            )
+            instance.signature_serveur = signature
+            instance.save(update_fields=["signature_serveur"])
+            journaliser(
+                request.user,
+                JournalAudit.Action.UPLOAD_SELFIE,
+                "ValeurChamp",
+                str(instance.pk),
+                avant={"fichier": ancien_fichier or None},
+                apres={
+                    "dossier": str(dossier.pk),
+                    "champ": str(champ.pk),
+                    "fichier": chemin_enregistre,
+                    "empreinte_sha256": empreinte,
+                    "date_capture": date_capture.isoformat(),
+                },
+                requete=request,
             )
 
         # Suppression de l'ancien justificatif remplacé (best-effort :
@@ -339,6 +401,8 @@ class ValeurChampFichierUploadAPIView(DossierProprietaireMixin, generics.Generic
                 "id": instance.id,
                 "champ": champ.id,
                 "url_signee": default_storage.url(chemin_enregistre),
+                "empreinte_sha256": empreinte or None,
+                "date_capture": date_capture.isoformat() if date_capture else None,
             },
             status=status.HTTP_201_CREATED,
         )
@@ -371,6 +435,52 @@ class ValeurChampFichierUrlAPIView(generics.GenericAPIView):
             return Response({"detail": "Aucun fichier associé à ce champ."}, status=status.HTTP_404_NOT_FOUND)
 
         return Response({"url_signee": default_storage.url(valeur.fichier)})
+
+
+class ValeurSelfieAuthenticiteAPIView(generics.GenericAPIView):
+    """Re-vérifie l'intégrité d'un selfie de preuve de vie (audit CREPMF).
+
+    GET /api/dossiers/dossiers/<dossier_pk>/valeurs/<valeur_pk>/authenticite/
+
+    Recalcule le hash SHA-256 du fichier ACTUELLEMENT stocké et re-valide
+    la signature HMAC serveur posée à la réception : toute altération
+    silencieuse du contenu (remplacement de fichier, modification en
+    base) est détectée. Accessible à l'investisseur propriétaire et au
+    personnel SGI en charge du dossier.
+    """
+
+    permission_classes = (permissions.IsAuthenticated,)
+
+    serializer_class = drf_serializers.Serializer
+
+    @extend_schema(responses={200: inline_serializer(
+        "VerificationPreuveVie",
+        {
+            "date_capture": drf_serializers.DateTimeField(required=False, allow_null=True),
+            "empreinte_sha256": drf_serializers.CharField(required=False, allow_null=True),
+            "concordante": drf_serializers.BooleanField(),
+            "signature_valide": drf_serializers.BooleanField(),
+            "detail": drf_serializers.CharField(),
+        },
+    )})
+    def get(self, request, dossier_pk, valeur_pk):
+        dossier = get_object_or_404(Dossier, pk=dossier_pk)
+        if not PeutAccederAuDossier().has_object_permission(request, self, dossier):
+            self.permission_denied(request, message="Vous n'avez pas accès à ce dossier.")
+
+        valeur = get_object_or_404(ValeurChamp, pk=valeur_pk, dossier=dossier)
+        if valeur.champ.type != ChampKYC.TypeChamp.SELFIE:
+            return Response(
+                {"detail": "Ce champ n'est pas un selfie de preuve de vie."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not valeur.fichier:
+            return Response(
+                {"detail": "Aucun selfie enregistré pour ce champ."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        return Response(verifier_preuve_selfie(dossier, valeur))
 
 
 class DossierGenererOtpAPIView(DossierProprietaireMixin, generics.GenericAPIView):

@@ -109,6 +109,12 @@ class ChampKYC(models.Model):
         CHOIX_UNIQUE = "CHOIX_UNIQUE", _("Choix unique")
         CHOIX_MULTIPLE = "CHOIX_MULTIPLE", _("Choix multiple")
         FICHIER = "FICHIER", _("Fichier joint")
+        SELFIE = "SELFIE", _("Selfie de vérification")
+
+    # Formats d'image acceptés pour un champ SELFIE (le selfie est une
+    # capture caméra directe — jamais une vidéo, jamais un exécutable
+    # déguisé ; la taille est plafonnée par défaut côté upload).
+    FORMATS_SELFIE = {"jpg", "jpeg", "png", "webp"}
 
     id = models.UUIDField(
         primary_key=True,
@@ -203,13 +209,24 @@ class ChampKYC(models.Model):
                 {"options_choix": _("Les options ne sont utilisables qu'avec CHOIX_UNIQUE/CHOIX_MULTIPLE.")}
             )
 
-        if self.type == self.TypeChamp.FICHIER:
+        types_fichiers = (self.TypeChamp.FICHIER, self.TypeChamp.SELFIE)
+        if self.type in types_fichiers:
             if not self.formats_acceptes:
                 raise ValidationError(
-                    {"formats_acceptes": _("Les formats acceptés sont requis pour un champ FICHIER.")}
+                    {"formats_acceptes": _("Les formats acceptés sont requis pour un champ de type fichier.")}
                 )
+            if self.type == self.TypeChamp.SELFIE:
+                formats = [f.strip().lower() for f in self.formats_acceptes.split(",")]
+                interdits = [f for f in formats if f not in self.FORMATS_SELFIE]
+                if interdits:
+                    raise ValidationError(
+                        {"formats_acceptes": _(
+                            "Un selfie n'accepte que des images (jpg, png, webp) "
+                            "— format(s) interdit(s) : %(formats)s."
+                        ) % {"formats": ", ".join(interdits)}}
+                    )
         elif self.formats_acceptes or self.taille_max_mo:
-            raise ValidationError(_("`formats_acceptes`/`taille_max_mo` ne s'utilisent qu'avec le type FICHIER."))
+            raise ValidationError(_("`formats_acceptes`/`taille_max_mo` ne s'utilisent qu'avec les types FICHIER/SELFIE."))
 
         if self.champ_parent_id:
             if self.champ_parent_id == self.pk:
@@ -519,6 +536,31 @@ class ValeurChamp(models.Model):
             "est temporaire et générée à la demande — Étape 2.4)."
         ),
     )
+    # --- Preuve de vie (champ SELFIE) : empreinte + signature serveur ---
+    # L'horodatage, le hash SHA-256 du fichier et sa signature HMAC sont
+    # produits côté serveur à la réception (traçabilité CREPMF) : jamais
+    # envoyés par le client, donc impossibles à falsifier à la source.
+    empreinte_sha256 = models.CharField(
+        _("Empreinte SHA-256 du fichier"),
+        max_length=64,
+        blank=True,
+        help_text=_("Hash du contenu stocké, calculé côté serveur à l'upload (champs SELFIE)."),
+    )
+    signature_serveur = models.CharField(
+        _("Signature HMAC serveur"),
+        max_length=128,
+        blank=True,
+        help_text=_(
+            "HMAC-SHA256 de (référence, valeur, chemin, empreinte, horodatage) "
+            "signée avec une clé serveur dédiée — vérifie que l'enregistrement "
+            "n'a pas été altéré après l'upload."
+        ),
+    )
+    date_capture = models.DateTimeField(
+        _("Date de capture"),
+        null=True, blank=True,
+        help_text=_("Horodatage serveur de la réception du selfie."),
+    )
     commentaire_agent = models.TextField(
         _("Commentaire de l'agent"),
         blank=True,
@@ -549,14 +591,15 @@ class ValeurChamp(models.Model):
 
     def clean(self):
         """Valide la cohérence type de champ / contenu de la valeur."""
-        if self.champ.type == ChampKYC.TypeChamp.FICHIER:
+        types_fichiers = (ChampKYC.TypeChamp.FICHIER, ChampKYC.TypeChamp.SELFIE)
+        if self.champ.type in types_fichiers:
             if self.champ.obligatoire and not self.fichier:
                 raise ValidationError({"fichier": _("Une référence de fichier est requise pour ce champ.")})
             if self.valeur:
-                raise ValidationError({"valeur": _("Le champ `valeur` est inutilisé pour un champ FICHIER.")})
+                raise ValidationError({"valeur": _("Le champ `valeur` est inutilisé pour un champ de type fichier.")})
         else:
             if self.fichier:
-                raise ValidationError({"fichier": _("`fichier` n'est utilisable que pour un champ de type FICHIER.")})
+                raise ValidationError({"fichier": _("`fichier` n'est utilisable que pour un champ de type fichier.")})
             if self.champ.obligatoire and not self.valeur:
                 raise ValidationError({"valeur": _("Ce champ est obligatoire.")})
             if self.valeur:

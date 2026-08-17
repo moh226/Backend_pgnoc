@@ -1,11 +1,14 @@
 """Services du domaine Dossiers : logique métier hors des vues."""
 
 import hashlib
+import hmac
 import json
 import secrets
 from datetime import timedelta
 
+from django.conf import settings
 from django.core.exceptions import ValidationError
+from django.core.files.storage import default_storage
 from django.db import transaction
 from django.utils import timezone
 from django.utils.crypto import constant_time_compare, pbkdf2
@@ -17,6 +20,8 @@ from dossiers.models import ChampKYC, Dossier, EtapeKYC, ValeurChamp
 
 _DUREE_VALIDITE_OTP = timedelta(minutes=5)
 _ITERATIONS_PBKDF2 = 120_000
+
+_TAILLE_MAX_SELFIE_SECOURS_MO = 5
 
 
 def recalculer_progression(dossier):
@@ -87,11 +92,11 @@ def _est_rempli(champ, valeur):
         une question obligatoire ne la « remplit » pas) ;
       - CHOIX_MULTIPLE : la liste doit contenir au moins un élément ;
       - NOMBRE : la chaîne doit contenir au moins un chiffre ;
-      - FICHIER : une référence de fichier est requise.
+      - FICHIER / SELFIE : une référence de fichier est requise.
     """
     if valeur is None:
         return False
-    if champ.type == ChampKYC.TypeChamp.FICHIER:
+    if champ.type in (ChampKYC.TypeChamp.FICHIER, ChampKYC.TypeChamp.SELFIE):
         return bool(valeur.fichier)
     if not valeur.valeur or not valeur.valeur.strip():
         return False
@@ -265,3 +270,112 @@ def _adresse_ip(requete):
     if x_forwarded:
         return x_forwarded.split(",")[0].strip()
     return requete.META.get("REMOTE_ADDR")
+
+
+# ---------------------------------------------------------------------------
+# Preuve de vie asynchrone (champ SELFIE) : empreinte + signature serveur.
+#
+# La plateforme ne peut pas distinguer un byte-array issu d'une caméra
+# d'un upload arbitraire : l'anti-fraude de niveau 1 est l'UI (capture
+# caméra contrainte). La chaîne de preuve serveur garantit ensuite la
+# traçabilité exigée par l'audit CREPMF :
+#   - `empreinte_sha256` : hash du contenu calculé côté serveur à la
+#     réception (un fichier remplacé en silence ne passe pas inaperçu) ;
+#   - `signature_serveur` : HMAC-SHA256 d'un payload liant la référence
+#     du dossier, l'identifiant de la valeur, le chemin stocké, le hash
+#     et l'horodatage — signée avec une clé dérivée de SECRET_KEY, elle
+#     ne peut être régénérée par un client ni après coup ;
+#   - `date_capture` : horodatage serveur de réception.
+# ---------------------------------------------------------------------------
+
+
+def _cle_signature_selfie():
+    """Clé HMAC dédiée aux preuves de selfie (dérivée de `SECRET_KEY`)."""
+    return hmac.new(
+        settings.SECRET_KEY.encode("utf-8"),
+        b"pgnoc:preuve-vie:selfie",
+        hashlib.sha256,
+    ).digest()
+
+
+def _payload_preuve_selfie(reference, valeur_id, chemin, empreinte, horodatage):
+    return "|".join([
+        reference,
+        str(valeur_id),
+        chemin,
+        empreinte,
+        horodatage.isoformat(),
+    ])
+
+
+def signer_preuve_selfie(reference, valeur_id, chemin, empreinte, horodatage):
+    """Signe (HMAC-SHA256) le contexte d'une preuve de vie reçue côté serveur."""
+    payload = _payload_preuve_selfie(
+        reference, valeur_id, chemin, empreinte, horodatage
+    )
+    return hmac.new(
+        _cle_signature_selfie(), payload.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+
+
+def verifier_preuve_selfie(dossier, valeur):
+    """Re-vérifie l'intégrité d'un selfie depuis le stockage.
+
+    Recalcule le hash SHA-256 du fichier actuellement stocké et re-valide
+    la signature HMAC sur le contexte enregistré. Retourne un dictionnaire
+    prêt à sérialiser ; le fichier manquant ou illisible ne fait pas
+    planter la vérification (rapport d'échec contrôlé).
+    """
+    if not valeur.fichier:
+        return {"fichier présent": False}
+    if not valeur.empreinte_sha256 or not valeur.signature_serveur:
+        return {
+            "date_capture": valeur.date_capture,
+            "concordante": False,
+            "signature_valide": False,
+            "detail": "Preuve incomplète (empreinte ou signature absente).",
+        }
+
+    try:
+        with default_storage.open(valeur.fichier, "rb") as objet:
+            hacheur = hashlib.sha256()
+            for morceau in iter(lambda: objet.read(1024 * 1024), b""):
+                hacheur.update(morceau)
+        empreinte_calculee = hacheur.hexdigest()
+    except Exception as exc:
+        return {
+            "date_capture": valeur.date_capture,
+            "concordante": False,
+            "signature_valide": False,
+            "detail": f"Fichier illisible en stockage : {exc}",
+        }
+
+    concordante = empreinte_calculee == valeur.empreinte_sha256
+    signature_attendue = signer_preuve_selfie(
+        dossier.reference,
+        valeur.id,
+        valeur.fichier,
+        valeur.empreinte_sha256,
+        valeur.date_capture,
+    )
+    signification = (
+        valeur.signature_serveur.strip()
+        and constant_time_compare(signature_attendue, valeur.signature_serveur.strip())
+    )
+    return {
+        "date_capture": valeur.date_capture,
+        "empreinte_sha256": valeur.empreinte_sha256,
+        "concordante": concordante,
+        "signature_valide": signification,
+        "detail": (
+            "Preuve de vie conforme : le fichier stocké correspond à "
+            "l'empreinte servie à la réception et la signature serveur "
+            "est valide."
+            if concordante and signification
+            else (
+                "Le contenu stocké ne correspond pas à l'empreinte d'origine."
+                if not concordante
+                else "La signature serveur est invalide."
+            )
+        ),
+    }

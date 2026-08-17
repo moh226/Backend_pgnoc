@@ -92,14 +92,69 @@ class PublicationConventionTests(APITestCase):
     def test_presentation_publication_et_lecture(self):
         url = reverse("sgi:admin-presentation")
         reponse = self.client.put(
-            url, {"contenu": "Leader de la gestion de titres en UEMOA."},
+            url,
+            {
+                "mission": "Leader de la gestion de titres en UEMOA.",
+                "forme_sociale": "SA",
+                "capital_social": "500 000 000 FCFA",
+                "numero_agrement": "AG-2024-015",
+                "activites": [
+                    {"titre": "Intermédiation", "description": "Achat-vente de titres."},
+                    {"titre": "Conseil", "description": "Stratégie de financement."},
+                ],
+                "membres": [{"nom": "Awa Koné", "fonction": "Directrice générale"}],
+                "references": [{"titre": "IPO BRVM 2025", "annee": "2025"}],
+            },
             format="json",
         )
         self.assertEqual(reponse.status_code, status.HTTP_200_OK)
-        self.assertEqual(InformationPresentation.objects.get(sgi=self.sgi_a).contenu,
-                         "Leader de la gestion de titres en UEMOA.")
+        self.assertEqual(reponse.data["mission"], "Leader de la gestion de titres en UEMOA.")
+        self.assertTrue(reponse.data["est_regule"])
+        self.assertEqual(len(reponse.data["activites"]), 2)
+        self.assertEqual(len(reponse.data["membres"]), 1)
+
+        presentation = InformationPresentation.objects.get(sgi=self.sgi_a)
+        self.assertEqual(presentation.mission, "Leader de la gestion de titres en UEMOA.")
+        self.assertEqual(list(presentation.activites.values_list("titre", flat=True)),
+                         ["Intermédiation", "Conseil"])
+        self.assertEqual(presentation.activites.get(titre="Conseil").ordre, 1)
+
         reponse = self.client.get(url)
-        self.assertIn("Leader", reponse.data["contenu"])
+        self.assertEqual(reponse.data["mission"], "Leader de la gestion de titres en UEMOA.")
+        self.assertEqual(reponse.data["autorite_agrement"], "AMF-UEMOA (ex-CREPMF)")
+
+    def test_presentation_listes_remplacees_integralement(self):
+        url = reverse("sgi:admin-presentation")
+        self.client.put(
+            url,
+            {"mission": "V1", "activites": [{"titre": "Ancien"}], "membres": [{"nom": "A"}]},
+            format="json",
+        )
+        reponse = self.client.put(
+            url,
+            {"mission": "V2", "activites": [{"titre": "Nouveau"}, {"titre": "Second"}]},
+            format="json",
+        )
+        self.assertEqual(reponse.status_code, status.HTTP_200_OK)
+        presentation = InformationPresentation.objects.get(sgi=self.sgi_a)
+        self.assertEqual(presentation.mission, "V2")
+        # La liste non fournie est conservée ; celle fournie est réécrite.
+        self.assertEqual(list(presentation.activites.values_list("titre", flat=True)),
+                         ["Nouveau", "Second"])
+        self.assertEqual(list(presentation.membres.values_list("nom", flat=True)), ["A"])
+
+    def test_presentation_validation_entrees(self):
+        url = reverse("sgi:admin-presentation")
+        reponse = self.client.put(
+            url,
+            {"activites": [{"titre": "   "}]},
+            format="json",
+        )
+        self.assertEqual(reponse.status_code, status.HTTP_400_BAD_REQUEST)
+        reponse = self.client.put(
+            url, {"email_contact": "pas-un-email"}, format="json",
+        )
+        self.assertEqual(reponse.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_non_admin_sgi_forbidden(self):
         for utilisateur, url in [
@@ -132,7 +187,11 @@ class FicheAdhesionTests(APITestCase):
             reverse("sgi:sgi-fiche", kwargs={"pk": self.sgi.pk}),
         )
         self.assertEqual(reponse.status_code, status.HTTP_200_OK)
-        self.assertEqual(reponse.data["presentation"], "Bienvenue chez Alpha.")
+        presentation = reponse.data["presentation"]
+        # Tant que les sections sont vides, l'ancien texte libre sert de mission.
+        self.assertEqual(presentation["mission"], "Bienvenue chez Alpha.")
+        self.assertFalse(presentation["est_regule"])
+        self.assertEqual(presentation["activites"], [])
         self.assertFalse(reponse.data["convention"]["signe_requis"])
 
 

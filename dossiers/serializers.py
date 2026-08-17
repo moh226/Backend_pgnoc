@@ -36,12 +36,23 @@ class ValeurChampSerializer(serializers.ModelSerializer):
     acceptée depuis le client (sinon un investisseur pourrait pointer
     vers le document d'un autre dossier et en obtenir une URL signée).
     Elle n'est renseignée que par l'endpoint de téléversement dédié.
+    L'empreinte / la signature / l'horodatage des selfies sont des
+    preuves SERVEUR : elles ne sont ni envoyées ni modifiables par le
+    client.
     """
 
     class Meta:
         model = ValeurChamp
-        fields = ("id", "champ", "valeur", "fichier", "commentaire_agent", "est_corrige", "date_maj")
-        read_only_fields = ("id", "fichier", "commentaire_agent", "est_corrige", "date_maj")
+        fields = (
+            "id", "champ", "valeur", "fichier",
+            "empreinte_sha256", "signature_serveur", "date_capture",
+            "commentaire_agent", "est_corrige", "date_maj",
+        )
+        read_only_fields = (
+            "id", "fichier",
+            "empreinte_sha256", "signature_serveur", "date_capture",
+            "commentaire_agent", "est_corrige", "date_maj",
+        )
 
     def validate_champ(self, champ):
         """Le champ doit appartenir à une étape ACTIVE de la SGI du dossier concerné."""
@@ -52,9 +63,9 @@ class ValeurChampSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 "Ce champ a été désactivé par la SGI : il n'est plus saisissable."
             )
-        if champ.type == ChampKYC.TypeChamp.FICHIER:
+        if champ.type in (ChampKYC.TypeChamp.FICHIER, ChampKYC.TypeChamp.SELFIE):
             raise serializers.ValidationError(
-                "Un champ FICHIER se remplit via l'endpoint de téléversement dédié."
+                "Un champ de type fichier se remplit via l'endpoint de téléversement dédié."
             )
         return champ
 
@@ -148,7 +159,7 @@ class DossierCreationSerializer(serializers.ModelSerializer):
 
 
 class TeleversementFichierSerializer(serializers.Serializer):
-    """Valide un fichier téléversé pour un ChampKYC de type FICHIER.
+    """Valide un fichier téléversé pour un ChampKYC de type FICHIER ou SELFIE.
 
     Serializer simple (pas ModelSerializer) car il ne correspond pas
     directement à un modèle : il combine `champ` (référence) et
@@ -158,11 +169,13 @@ class TeleversementFichierSerializer(serializers.Serializer):
     magic bytes du contenu (le Content-Type envoyé par le client est
     falsifiable) ; la taille est plafonnée par `taille_max_mo` du champ,
     avec une borne absolue en secours (un champ sans limite ne signifie
-    JAMAIS « illimité »).
+    JAMAIS « illimité ») — 10 Mo pour un FICHIER, 5 Mo pour un SELFIE
+    (image de capture caméra, par nature légère).
     """
 
     # Bornes de secours si le champ n'a pas de limite configurée.
     TAILLE_MAX_SECOURS_MO = 10
+    TAILLE_MAX_SELFIE_MO = 5
 
     # Signatures binaires (magic bytes) reconnues, par type MIME.
     _MAGIC_BYTES = {
@@ -185,7 +198,9 @@ class TeleversementFichierSerializer(serializers.Serializer):
     }
 
     champ = serializers.PrimaryKeyRelatedField(
-        queryset=ChampKYC.objects.filter(type=ChampKYC.TypeChamp.FICHIER)
+        queryset=ChampKYC.objects.filter(
+            type__in=[ChampKYC.TypeChamp.FICHIER, ChampKYC.TypeChamp.SELFIE]
+        )
     )
     fichier = serializers.FileField()
 
@@ -209,7 +224,10 @@ class TeleversementFichierSerializer(serializers.Serializer):
         self._valider_content_reel(fichier, extension, formats_autorises)
 
         taille_mo = fichier.size / (1024 * 1024)
-        plafond_mo = champ.taille_max_mo or self.TAILLE_MAX_SECOURS_MO
+        if champ.type == ChampKYC.TypeChamp.SELFIE:
+            plafond_mo = champ.taille_max_mo or self.TAILLE_MAX_SELFIE_MO
+        else:
+            plafond_mo = champ.taille_max_mo or self.TAILLE_MAX_SECOURS_MO
         if taille_mo > plafond_mo:
             raise serializers.ValidationError(
                 {"fichier": f"Fichier trop volumineux ({taille_mo:.1f} Mo, max {plafond_mo} Mo)."}
