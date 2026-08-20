@@ -4,7 +4,7 @@ from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from django.core.exceptions import ValidationError as DjangoValidationError
 
 
-from comptes.models import Utilisateur, Role
+from comptes.models import ProfilInvestisseur, Utilisateur, Role
 
 
 class InscriptionInvestisseurSerializer(serializers.ModelSerializer):
@@ -235,3 +235,100 @@ class AgentSerializer(serializers.ModelSerializer):
         if initial:
             data["mot_de_passe_initial"] = initial
         return data
+
+
+class ProfilMoiSerializer(serializers.ModelSerializer):
+    """Lecture/mise à jour du profil personnel (GET/PATCH /moi/profil/).
+
+    Endpoint « moi », commun aux quatre rôles :
+      - l'email et le rôle sont en lecture seule (identifiants système) ;
+      - le champ métier dépend du rôle (type_personne pour
+        l'investisseur, matricule pour l'agent, fonction pour l'admin
+        SGI) ; il n'est renvoyé qu'au rôle concerné, et les champs
+        d'un autre rôle sont ignorés silencieusement en écriture.
+    """
+
+    role = serializers.CharField(source="role.code", read_only=True)
+    sgi = serializers.CharField(source="sgi.nom", read_only=True, default=None)
+    type_personne = serializers.ChoiceField(
+        source="profil_investisseur.type_personne",
+        choices=ProfilInvestisseur.TypePersonne.choices,
+        required=False,
+    )
+    matricule = serializers.CharField(
+        source="profil_agent_sgi.matricule", required=False, allow_blank=True,
+    )
+    fonction = serializers.CharField(
+        source="profil_admin_sgi.fonction", required=False, allow_blank=True,
+    )
+
+    class Meta:
+        model = Utilisateur
+        fields = (
+            "id", "email", "prenom", "nom", "role", "sgi", "date_joined",
+            "type_personne", "matricule", "fonction",
+        )
+        read_only_fields = ("id", "email", "date_joined")
+
+    def update(self, instance, validated_data):
+        instance.prenom = validated_data.get("prenom", instance.prenom)
+        instance.nom = validated_data.get("nom", instance.nom)
+        instance.save(update_fields=["prenom", "nom", "date_maj"])
+
+        profil_investisseur = validated_data.pop("profil_investisseur", {})
+        if instance.est_investisseur and "type_personne" in profil_investisseur:
+            profil = instance.profil_investisseur
+            profil.type_personne = profil_investisseur["type_personne"]
+            profil.save(update_fields=["type_personne"])
+
+        profil_agent = validated_data.pop("profil_agent_sgi", {})
+        if instance.est_agent_sgi and "matricule" in profil_agent:
+            profil = instance.profil_agent_sgi
+            profil.matricule = profil_agent["matricule"]
+            profil.save(update_fields=["matricule"])
+
+        profil_admin = validated_data.pop("profil_admin_sgi", {})
+        if instance.est_admin_sgi and "fonction" in profil_admin:
+            profil = instance.profil_admin_sgi
+            profil.fonction = profil_admin["fonction"]
+            profil.save(update_fields=["fonction"])
+        return instance
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        champs_du_role = {
+            Role.Code.INVESTISSEUR: {"type_personne"},
+            Role.Code.AGENT_SGI: {"matricule"},
+            Role.Code.ADMIN_SGI: {"fonction"},
+            Role.Code.ADMIN_GENERAL: set(),
+        }[instance.role.code]
+        for champ in ("type_personne", "matricule", "fonction"):
+            if champ not in champs_du_role:
+                data.pop(champ, None)
+        return data
+
+
+class ChangerMotDePasseSerializer(serializers.Serializer):
+    """Changement de mot de passe avec vérification de l'ancien."""
+
+    ancien_mot_de_passe = serializers.CharField(
+        write_only=True, style={"input_type": "password"},
+    )
+    nouveau_mot_de_passe = serializers.CharField(
+        write_only=True, validators=[validate_password],
+        style={"input_type": "password"},
+    )
+    confirmation = serializers.CharField(
+        write_only=True, style={"input_type": "password"},
+    )
+
+    def validate(self, attrs):
+        if attrs["nouveau_mot_de_passe"] != attrs["confirmation"]:
+            raise serializers.ValidationError(
+                {"confirmation": "Les mots de passe ne correspondent pas."}
+            )
+        if not self.context["request"].user.check_password(attrs["ancien_mot_de_passe"]):
+            raise serializers.ValidationError(
+                {"ancien_mot_de_passe": "L'ancien mot de passe est incorrect."}
+            )
+        return attrs

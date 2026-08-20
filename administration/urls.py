@@ -2,6 +2,11 @@
 
 from django.urls import path
 
+from accueil.views import (
+    BlocAccueilAdminDetailAPIView,
+    BlocAccueilAdminListAPIView,
+    BlocAccueilOrdreAPIView,
+)
 from administration.views import (
     DashboardAPIView,
     SGIListCreateAPIView,
@@ -25,5 +30,16 @@ urlpatterns = [
         "utilisateurs/<uuid:pk>/",
         UtilisateurRetrieveUpdateAPIView.as_view(),
         name="utilisateurs-detail",
+    ),
+    path("accueil/", BlocAccueilAdminListAPIView.as_view(), name="accueil-list"),
+    path(
+        "accueil/ordre/",
+        BlocAccueilOrdreAPIView.as_view(),
+        name="accueil-ordre",
+    ),
+    path(
+        "accueil/<str:type_bloc>/",
+        BlocAccueilAdminDetailAPIView.as_view(),
+        name="accueil-detail",
     ),
 ]

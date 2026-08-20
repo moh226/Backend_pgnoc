@@ -52,6 +52,9 @@ class JournalAudit(models.Model):
         MODIFICATION_SGI = "MODIFICATION_SGI", _("Modification d'une SGI partenaire")
         CREATION_UTILISATEUR = "CREATION_UTILISATEUR", _("Création d'un compte interne")
         MODIFICATION_UTILISATEUR = "MODIFICATION_UTILISATEUR", _("Modification d'un compte interne")
+        MODIFICATION_PROFIL = "MODIFICATION_PROFIL", _("Modification du profil personnel")
+        CHANGEMENT_MOT_DE_PASSE = "CHANGEMENT_MOT_DE_PASSE", _("Changement de mot de passe")
+        MODIFICATION_ACCUEIL = "MODIFICATION_ACCUEIL", _("Modification de la page d'accueil")
 
     id = models.UUIDField(
         primary_key=True, default=uuid.uuid4, editable=False,
