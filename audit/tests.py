@@ -275,7 +275,7 @@ class JournalLectureAdminGeneralTests(APITestCase):
         self.assertEqual(reponse["Content-Type"], "text/csv; charset=utf-8")
         self.assertIn("attachment;", reponse["Content-Disposition"])
 
-        lecteur = csv.reader(io.StringIO(reponse.content.decode("utf-8")))
+        lecteur = csv.reader(io.StringIO(b"".join(reponse.streaming_content).decode("utf-8")))
         lignes = list(lecteur)
         self.assertEqual(lignes[0][0], "date_action")
         self.assertEqual(len(lignes), 3)  # en-tête + 2 traces
@@ -287,7 +287,7 @@ class JournalLectureAdminGeneralTests(APITestCase):
         reponse = self.client.get(
             reverse("audit:journal-export"), {"email": "agent@"},
         )
-        lignes = list(csv.reader(io.StringIO(reponse.content.decode("utf-8"))))
+        lignes = list(csv.reader(io.StringIO(b"".join(reponse.streaming_content).decode("utf-8"))))
         self.assertEqual(len(lignes), 2)  # en-tête + 1 trace
         self.assertEqual(lignes[1][1], "agent@example.com")
 
@@ -303,7 +303,28 @@ class JournalLectureAdminGeneralTests(APITestCase):
             requete=requete,
         )
         self.client.force_authenticate(self.admin_general)
-        contenu = self.client.get(
+        contenu = b"".join(self.client.get(
             reverse("audit:journal-export"),
-        ).content.decode("utf-8")
+        ).streaming_content).decode("utf-8")
         self.assertIn("'=cmd|'/C calc'!A0", contenu)
+
+    def test_export_pdf(self):
+        self.client.force_authenticate(self.admin_general)
+        reponse = self.client.get(reverse("audit:journal-export-pdf"))
+        self.assertEqual(reponse.status_code, status.HTTP_200_OK)
+        self.assertEqual(reponse["Content-Type"], "application/pdf")
+        self.assertIn("attachment;", reponse["Content-Disposition"])
+        self.assertTrue(reponse.content[:5] == b"%PDF-")
+
+    def test_export_pdf_refuse_pour_non_admin_general(self):
+        self.client.force_authenticate(self.agent)
+        reponse = self.client.get(reverse("audit:journal-export-pdf"))
+        self.assertEqual(reponse.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_export_pdf_vide_retourne_un_pdf_valide(self):
+        from unittest.mock import patch
+        with patch("audit.views._filtrer_journal", return_value=JournalAudit.objects.none()):
+            self.client.force_authenticate(self.admin_general)
+            reponse = self.client.get(reverse("audit:journal-export-pdf"))
+            self.assertEqual(reponse.status_code, status.HTTP_200_OK)
+            self.assertTrue(reponse.content[:5] == b"%PDF-")

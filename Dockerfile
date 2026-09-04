@@ -1,5 +1,5 @@
 # Image de production du backend PGNOC-TI.
-FROM python:3.12-slim
+FROM python:3.12-slim AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -11,12 +11,37 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Code applicatif.
+# ── Étape 2 : image finale sans outils de build ──
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+# Copier les dépendances installées depuis l'étape builder
+COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
+
+# Créer un utilisateur non-root
+RUN groupadd -r pgnoc && useradd -r -g pgnoc -d /app -s /sbin/nologin pgnoc
+
+# Code applicatif
 COPY . .
 
-# Gunicorn + WhiteNoise servent l'API et les statiques.
-# --timeout 60 : l'export CSV du journal peut être long sur de gros volumes.
+# Collectstatic au build time (CompressedManifestStaticFilesStorage l'exige)
+RUN SECRET_KEY=build-placeholder python manage.py collectstatic --noinput
+
+# Donner la propriété à l'utilisateur non-root
+RUN chown -R pgnoc:pgnoc /app
+
+USER pgnoc
+
 EXPOSE 8000
 
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz/')" || exit 1
+
 CMD ["gunicorn", "pgnoc.wsgi:application", \
-     "--bind", "0.0.0.0:8000", "--workers", "4", "--timeout", "60"]
+     "--bind", "0.0.0.0:8000", "--workers", "4", "--timeout", "60", \
+     "--access-logfile", "-", "--error-logfile", "-"]

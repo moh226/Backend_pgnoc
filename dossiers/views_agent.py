@@ -7,6 +7,8 @@ Les transitions d'état délèguent tout à la machine à états
 (`dossiers.workflow.transiter`).
 """
 
+import logging
+
 from django.core.exceptions import ValidationError
 from django.shortcuts import get_object_or_404
 from drf_spectacular.utils import extend_schema, inline_serializer
@@ -14,14 +16,17 @@ from rest_framework import generics, permissions, status
 from rest_framework import serializers as drf_serializers
 from rest_framework.response import Response
 
+logger = logging.getLogger("pgnoc.dossiers")
+
 from audit.models import JournalAudit
 from audit.services import journaliser
-from comptes.permissions import EstPersonnelSGI
+from comptes.permissions import EstAdminSGI, EstPersonnelSGI
+from comptes.models import Role, Utilisateur
 from dossiers.models import Dossier, ValeurChamp
 from dossiers.permissions import PeutAccederAuDossier
 from dossiers.serializers import DossierDetailSerializer
 from dossiers.workflow import transiter
-from notifications.services import notifier_commentaire_agent
+from notifications.tasks import notifier_commentaire_agent_task
 
 
 def _recuperer_dossier_autorise(request, view, dossier_pk):
@@ -132,7 +137,10 @@ class ValeurChampCommenterAPIView(generics.GenericAPIView):
 
         # UC09 : l'investisseur doit être alerté de la demande de
         # correction — il ne peut pas deviner qu'il doit revenir.
-        notifier_commentaire_agent(dossier, valeur, request.user)
+        try:
+            notifier_commentaire_agent_task.delay(str(dossier.pk), str(valeur.pk))
+        except Exception:
+            logger.warning("Notification commentaire non dispatchée (Redis ?)", exc_info=True)
 
         return Response(
             {"id": valeur.id, "commentaire_agent": valeur.commentaire_agent},
@@ -198,6 +206,117 @@ class DossierRejeterAPIView(generics.GenericAPIView):
             )
         except ValidationError as exc:
             raise drf_serializers.ValidationError(exc.messages)
+
+        dossier.refresh_from_db()
+        return Response(self.get_serializer(dossier).data, status=status.HTTP_200_OK)
+
+
+class DossierTransfererAPIView(generics.GenericAPIView):
+    """UC : un Admin SGI transfère un dossier à un autre agent de la même SGI.
+
+    POST /api/dossiers/dossiers/<pk>/transferer/
+    Body : { "agent_id": "uuid" }
+
+    Règles :
+      - Seul un Admin SGI peut transférer.
+      - Le dossier doit être EN_INSTRUCTION ou SOUMIS.
+      - L'agent cible doit être actif et appartenir à la même SGI.
+      - Le statut reste EN_INSTRUCTION (si SOUMIS, bascule via workflow).
+    """
+
+    serializer_class = DossierDetailSerializer
+    permission_classes = (permissions.IsAuthenticated, EstAdminSGI)
+
+    @extend_schema(
+        request=inline_serializer(
+            "TransfertDossier",
+            {"agent_id": drf_serializers.UUIDField()},
+        ),
+        responses={200: DossierDetailSerializer},
+    )
+    def post(self, request, dossier_pk):
+        dossier = _recuperer_dossier_autorise(request, self, dossier_pk)
+
+        if dossier.statut not in (Dossier.Statut.SOUMIS, Dossier.Statut.EN_INSTRUCTION):
+            return Response(
+                {"detail": "Seul un dossier SOUMIS ou EN_INSTRUCTION peut être transféré."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        agent_id = request.data.get("agent_id")
+        if not agent_id:
+            return Response(
+                {"detail": "Le champ `agent_id` est obligatoire."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            agent_cible = Utilisateur.objects.get(pk=agent_id)
+        except (Utilisateur.DoesNotExist, ValueError):
+            return Response(
+                {"detail": "Agent introuvable."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if not agent_cible.is_active:
+            return Response(
+                {"detail": "Cet agent est désactivé."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if agent_cible.sgi_id != dossier.sgi_id:
+            return Response(
+                {"detail": "Cet agent n'appartient pas à la même SGI que le dossier."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if agent_cible.role.code not in (Role.Code.AGENT_SGI, Role.Code.ADMIN_SGI):
+            return Response(
+                {"detail": "L'agent cible doit être un Agent SGI ou Admin SGI."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        ancien_agent_id = dossier.agent_id
+        ancien_statut = dossier.statut
+
+        dossier.agent = agent_cible
+        update_fields = ["agent"]
+
+        if dossier.statut == Dossier.Statut.SOUMIS:
+            from dossiers.workflow import transiter
+            try:
+                transiter(
+                    dossier,
+                    Dossier.Statut.EN_INSTRUCTION,
+                    agent=agent_cible,
+                    utilisateur=request.user,
+                    requete=request,
+                )
+                update_fields = []
+            except ValidationError as exc:
+                return Response(
+                    {"detail": str(exc.message)},
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+        if update_fields:
+            dossier.save(update_fields=update_fields)
+
+        journaliser(
+            request.user,
+            JournalAudit.Action.TRANSITION_DOSSIER,
+            "Dossier",
+            str(dossier.pk),
+            avant={
+                "agent_id": str(ancien_agent_id) if ancien_agent_id else None,
+                "statut": ancien_statut,
+            },
+            apres={
+                "agent_id": str(agent_cible.pk),
+                "statut": dossier.statut,
+            },
+            requete=request,
+        )
 
         dossier.refresh_from_db()
         return Response(self.get_serializer(dossier).data, status=status.HTTP_200_OK)

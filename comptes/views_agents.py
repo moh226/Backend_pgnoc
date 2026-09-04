@@ -19,6 +19,16 @@ from comptes.permissions import EstAdminSGI
 from comptes.serializers import AgentSerializer
 
 
+class AgentQuerysetMixin:
+    """Queryset commun aux vues de gestion des agents par l'Admin SGI."""
+
+    def get_queryset(self):
+        return Utilisateur.objects.filter(
+            role__code=Role.Code.AGENT_SGI,
+            sgi_id=self.request.user.sgi_id,
+        ).select_related("profil_agent_sgi")
+
+
 def _apercu_agent(utilisateur):
     """Vue JSON de l'état d'un compte agent (sans secret)."""
     return {
@@ -30,7 +40,7 @@ def _apercu_agent(utilisateur):
     }
 
 
-class AgentListCreateAPIView(generics.ListCreateAPIView):
+class AgentListCreateAPIView(AgentQuerysetMixin, generics.ListCreateAPIView):
     """Liste (cloisonnée) et création d'agents par l'Admin SGI.
 
     GET  /api/comptes/agents/
@@ -39,12 +49,6 @@ class AgentListCreateAPIView(generics.ListCreateAPIView):
 
     serializer_class = AgentSerializer
     permission_classes = (permissions.IsAuthenticated, EstAdminSGI)
-
-    def get_queryset(self):
-        return Utilisateur.objects.filter(
-            role__code=Role.Code.AGENT_SGI,
-            sgi_id=self.request.user.sgi_id,
-        ).select_related("profil_agent_sgi")
 
     def perform_create(self, serializer):
         # La création d'un compte (avec mot de passe initial remis par
@@ -60,7 +64,7 @@ class AgentListCreateAPIView(generics.ListCreateAPIView):
         )
 
 
-class AgentRetrieveUpdateAPIView(generics.RetrieveUpdateAPIView):
+class AgentRetrieveUpdateAPIView(AgentQuerysetMixin, generics.RetrieveUpdateAPIView):
     """Détail / mise à jour (bascule active) d'un agent de SA SGI.
 
     GET   /api/comptes/agents/<id>/
@@ -71,12 +75,6 @@ class AgentRetrieveUpdateAPIView(generics.RetrieveUpdateAPIView):
 
     serializer_class = AgentSerializer
     permission_classes = (permissions.IsAuthenticated, EstAdminSGI)
-
-    def get_queryset(self):
-        return Utilisateur.objects.filter(
-            role__code=Role.Code.AGENT_SGI,
-            sgi_id=self.request.user.sgi_id,
-        ).select_related("profil_agent_sgi")
 
     def perform_update(self, serializer):
         avant = _apercu_agent(serializer.instance)

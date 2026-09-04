@@ -14,7 +14,7 @@ class UtilisateurQuerySet(models.QuerySet):
 
     def visible_pour(self, utilisateur):
         """Retourne le sous-ensemble d'utilisateurs visibles par `utilisateur`."""
-        base = self.avec_role()
+        base = self.avec_role().all()
 
         if utilisateur.est_admin_general:
             return base

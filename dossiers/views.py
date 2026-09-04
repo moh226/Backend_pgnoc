@@ -1,6 +1,9 @@
 import hashlib
+import logging
 import uuid
 from datetime import date
+
+logger = logging.getLogger("pgnoc.dossiers")
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
@@ -32,13 +35,7 @@ from dossiers.serializers import (
 )
 
 
-def _est_uuid_valide(valeur):
-    """True si `valeur` est un UUID bien formé (évite un 500 sur filtre)."""
-    try:
-        uuid.UUID(str(valeur))
-        return True
-    except (ValueError, AttributeError):
-        return False
+from dossiers.utils import est_uuid_valide
 
 
 @extend_schema_view(
@@ -73,7 +70,7 @@ class EtapeKYCListAPIView(generics.ListAPIView):
             raise drf_serializers.ValidationError(
                 {"sgi": "Le paramètre de requête `sgi` est obligatoire."}
             )
-        if not _est_uuid_valide(sgi_id):
+        if not est_uuid_valide(sgi_id):
             raise drf_serializers.ValidationError(
                 {"sgi": "Le paramètre `sgi` doit être un identifiant UUID valide."}
             )
@@ -183,7 +180,7 @@ class DossierListCreateAPIView(generics.ListCreateAPIView):
     def get_permissions(self):
         if self.request.method == "POST":
             return [permissions.IsAuthenticated(), EstInvestisseur()]
-        return [permissions.IsAuthenticated()]
+        return super().get_permissions()
 
     def perform_create(self, serializer):
         dossier = serializer.save()
@@ -250,18 +247,22 @@ class ValeurChampListCreateAPIView(
         est_corrige = bool(existante and existante.commentaire_agent)
 
         try:
+            valeurs = ValeurChamp(
+                dossier=dossier,
+                champ=champ,
+                valeur=serializer.validated_data.get("valeur", ""),
+                est_corrige=est_corrige,
+            )
+            valeurs.clean()
             instance, cree = ValeurChamp.objects.update_or_create(
                 dossier=dossier,
                 champ=champ,
                 defaults={
-                    "valeur": serializer.validated_data.get("valeur", ""),
-                    "est_corrige": est_corrige,
+                    "valeur": valeurs.valeur,
+                    "est_corrige": valeurs.est_corrige,
                 },
             )
         except ValidationError as exc:
-            # 'ValeurChamp.save()' appelle 'full_clean()' : sans cette
-            # conversion, une erreur métier remonterait en 500 au lieu
-            # d'une réponse 400 exploitable par le client.
             raise drf_serializers.ValidationError(
                 exc.message_dict if hasattr(exc, "error_dict") else exc.messages
             )
@@ -337,23 +338,26 @@ class ValeurChampFichierUploadAPIView(
         chemin_enregistre = default_storage.save(chemin, fichier)
 
         try:
+            valeurs = ValeurChamp(
+                dossier=dossier, champ=champ,
+                fichier=chemin_enregistre,
+                valeur="",
+                empreinte_sha256=empreinte,
+                date_capture=date_capture,
+                est_corrige=bool(existante and existante.commentaire_agent),
+            )
+            valeurs.clean()
             instance, _ = ValeurChamp.objects.update_or_create(
                 dossier=dossier, champ=champ,
                 defaults={
-                    "fichier": chemin_enregistre,
+                    "fichier": valeurs.fichier,
                     "valeur": "",
-                    "empreinte_sha256": empreinte,
-                    "date_capture": date_capture,
-                    # Un remplacement après demande de correction doit
-                    # rester visible de l'agent : on passe est_corrige à
-                    # True quand un commentaire attend une relecture.
-                    "est_corrige": bool(existante and existante.commentaire_agent),
+                    "empreinte_sha256": valeurs.empreinte_sha256,
+                    "date_capture": valeurs.date_capture,
+                    "est_corrige": valeurs.est_corrige,
                 },
             )
         except ValidationError as exc:
-            # La validation métier a échoué : le fichier qu'on venait
-            # d'écrire ne sera référencé par personne, on le supprime
-            # pour ne pas le laisser orphelin.
             default_storage.delete(chemin_enregistre)
             raise drf_serializers.ValidationError(
                 exc.message_dict if hasattr(exc, "error_dict") else exc.messages
@@ -392,7 +396,10 @@ class ValeurChampFichierUploadAPIView(
             try:
                 default_storage.delete(ancien_fichier)
             except Exception:
-                pass
+                logger.warning(
+                    "Suppression fichier orphelin échouée : %s",
+                    ancien_fichier, exc_info=True,
+                )
 
         recalculer_progression(dossier)
 

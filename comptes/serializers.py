@@ -1,7 +1,12 @@
+import logging
+
 from django.contrib.auth.password_validation import validate_password
+from django.db import IntegrityError
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from django.core.exceptions import ValidationError as DjangoValidationError
+
+logger = logging.getLogger(__name__)
 
 
 from comptes.models import ProfilInvestisseur, Utilisateur, Role
@@ -71,13 +76,23 @@ class InscriptionInvestisseurSerializer(serializers.ModelSerializer):
         validated_data.pop("password_confirmation")
         password = validated_data.pop("password")
         try:
-            return Utilisateur.objects.create_user(
+            user = Utilisateur.objects.create_user(
                 password=password,
                 role=Role.Code.INVESTISSEUR,
                 **validated_data
             )
+        except IntegrityError:
+            raise serializers.ValidationError(
+                {"email": "Un compte existe déjà avec cette adresse email."}
+            )
         except DjangoValidationError as exc:
             raise serializers.ValidationError(exc.messages)
+        from notifications.tasks import envoyer_email_inscription
+        try:
+            envoyer_email_inscription.delay(str(user.pk))
+        except Exception:
+            logger.warning("Email inscription non envoyé (Redis indisponible ?)", exc_info=True)
+        return user
 
 
 
@@ -173,7 +188,6 @@ class AgentSerializer(serializers.ModelSerializer):
     @staticmethod
     def _generer_mot_de_passe():
         import random
-        import string
 
         alphabet = "ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789"
         return "".join(random.SystemRandom().choice(alphabet) for _ in range(12))
@@ -201,7 +215,7 @@ class AgentSerializer(serializers.ModelSerializer):
                 nom=validated_data.get("nom", ""),
                 is_active=True,
             )
-            profil = ProfilAgentSGI.objects.get(utilisateur=utilisateur)
+            profil, _ = ProfilAgentSGI.objects.get_or_create(utilisateur=utilisateur)
             if matricule:
                 profil.matricule = matricule
                 profil.save(update_fields=["matricule"])
@@ -301,7 +315,7 @@ class ProfilMoiSerializer(serializers.ModelSerializer):
             Role.Code.AGENT_SGI: {"matricule"},
             Role.Code.ADMIN_SGI: {"fonction"},
             Role.Code.ADMIN_GENERAL: set(),
-        }[instance.role.code]
+        }.get(instance.role.code, set())
         for champ in ("type_personne", "matricule", "fonction"):
             if champ not in champs_du_role:
                 data.pop(champ, None)
@@ -323,12 +337,17 @@ class ChangerMotDePasseSerializer(serializers.Serializer):
     )
 
     def validate(self, attrs):
+        user = self.context["request"].user
+        if not user.check_password(attrs["ancien_mot_de_passe"]):
+            raise serializers.ValidationError(
+                {"ancien_mot_de_passe": "L'ancien mot de passe est incorrect."}
+            )
+        if attrs["nouveau_mot_de_passe"] == attrs["ancien_mot_de_passe"]:
+            raise serializers.ValidationError(
+                {"nouveau_mot_de_passe": "Le nouveau mot de passe doit être différent de l'ancien."}
+            )
         if attrs["nouveau_mot_de_passe"] != attrs["confirmation"]:
             raise serializers.ValidationError(
                 {"confirmation": "Les mots de passe ne correspondent pas."}
-            )
-        if not self.context["request"].user.check_password(attrs["ancien_mot_de_passe"]):
-            raise serializers.ValidationError(
-                {"ancien_mot_de_passe": "L'ancien mot de passe est incorrect."}
             )
         return attrs

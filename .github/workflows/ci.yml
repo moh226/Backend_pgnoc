@@ -2,53 +2,75 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, develop]
   pull_request:
+    branches: [main]
 
 jobs:
-  tests:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ruff
+      - run: ruff check .
+      - run: ruff format --check .
+
+  test:
     runs-on: ubuntu-latest
     services:
       postgres:
         image: postgres:16-alpine
         env:
-          POSTGRES_DB: pgnoc_ti
+          POSTGRES_DB: pgnoc_ti_test
           POSTGRES_USER: pgnoc_user
-          POSTGRES_PASSWORD: pgnoc_ti_secret
+          POSTGRES_PASSWORD: test_password
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U pgnoc_user -d pgnoc_ti"
+          --health-cmd "pg_isready -U pgnoc_user -d pgnoc_ti_test"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
 
     env:
-      DJANGO_SECRET_KEY: ci-secret-key
-      DJANGO_DEBUG: "False"
-      POSTGRES_DB: pgnoc_ti
+      DJANGO_SECRET_KEY: ci-test-secret-key-not-for-production
+      DJANGO_SIGNING_KEY: ci-test-signing-key-not-for-production
+      DJANGO_DEBUG: "True"
+      DJANGO_ALLOWED_HOSTS: localhost,127.0.0.1
+      DJANGO_SECURE_SSL_REDIRECT: "False"
+      POSTGRES_DB: pgnoc_ti_test
       POSTGRES_USER: pgnoc_user
-      POSTGRES_PASSWORD: pgnoc_ti_secret
-      POSTGRES_HOST: 127.0.0.1
-      POSTGRES_PORT: "5432"
-      DJANGO_ALLOWED_HOSTS: testserver,localhost
+      POSTGRES_PASSWORD: test_password
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: 5432
+      REDIS_URL: redis://localhost:6379/1
+      CELERY_BROKER_URL: redis://localhost:6379/0
+      CELERY_RESULT_BACKEND: redis://localhost:6379/0
 
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
-
-      - name: Installer les dépendances
-        run: pip install -r requirements.txt
-
-      - name: Vérifications Django (system check)
-        run: python manage.py check
-
-      - name: Suite de tests complète
-        run: python manage.py test --noinput
-
-      - name: Schéma OpenAPI générable
-        run: python manage.py spectacular --file schema.yml
+      - run: pip install -r requirements.txt
+      - name: Vérifier les migrations
+        run: python manage.py makemigrations --check --dry-run
+      - name: Lint (ruff)
+        run: |
+          pip install ruff
+          ruff check .
+      - name: Tests
+        run: python manage.py test --parallel

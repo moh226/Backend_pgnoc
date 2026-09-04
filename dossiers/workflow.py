@@ -9,16 +9,20 @@ Conventions :
     par ailleurs la cohérence statut/signature).
 """
 
+import logging
+
 from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 
+logger = logging.getLogger("pgnoc.dossiers")
+
 from audit.services import journaliser
 from audit.models import JournalAudit
 from dossiers.models import Dossier
 from dossiers.services import calculer_progression_pct
-from notifications.services import notifier_transition
+from notifications.tasks import notifier_transition_task
 
 TRANSITIONS = {
     Dossier.Statut.BROUILLON: {Dossier.Statut.SOUMIS},
@@ -69,10 +73,12 @@ def transiter(dossier,
             requete=requete,
         )
     # La transaction est engagée ; on synchronise l'instance de
-    # l'appelant puis on alerte les destinataires (effet de bord hors
-    # transaction, best-effort).
+    # l'appelant puis on lance la notification asynchrone (best-effort).
     dossier.refresh_from_db()
-    notifier_transition(dossier, nouveau_statut)
+    try:
+        notifier_transition_task.delay(str(dossier.pk), nouveau_statut)
+    except Exception:
+        logger.warning("Notification transition non dispatchée (Redis ?)", exc_info=True)
 
 
 def _appliquer_transition(dossier,
@@ -177,21 +183,25 @@ def _snapshot(dossier):
     }
 
 
-def champs_effectivement_modifies(dossier):
+def champs_effectivement_modifies(dossier, base=None):
     """Compare l'état en mémoire aux valeurs en base pour `update_fields`.
 
     'save (update_fields=...)` n'écrit QUE les champs listés : on liste
     donc uniquement ceux que `transiter()` a vraiment modifiés, en les
     comparant aux valeurs persistées en base.
+
+    Si `base` est fourni (instance frais du `select_for_update`), on
+    l'utilise directement pour éviter une requête supplémentaire.
     """
     candidats = [
         "statut", "version", "etape_courante", "agent", "progression_pct",
         "date_soumission", "date_instruction", "date_decision", "motif_rejet",
     ]
-    en_base = Dossier.objects.only(*candidats).get(pk=dossier.pk)
+    if base is None:
+        base = Dossier.objects.only(*candidats).get(pk=dossier.pk)
     modifie = [
         champ for champ in candidats
-        if getattr(dossier, champ) != getattr(en_base, champ)
+        if getattr(dossier, champ) != getattr(base, champ)
     ]
     if not modifie:
         # Sauvegarder sans champ modifié n'est pas accepté par Django

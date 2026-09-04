@@ -20,21 +20,25 @@ Sécurité : le paramètre d'état ('state') empêche l'attaque "login CSRF"
 callback compare la valeur reçue à celle stockée en session.
 """
 
+import logging
 import secrets
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
 import requests
 from django.conf import settings
+from django.db import IntegrityError, transaction
 from django.shortcuts import redirect
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiParameter, extend_schema
-from rest_framework import permissions, serializers
+from rest_framework import permissions, serializers, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from comptes.models import Role, Utilisateur
 from comptes.serializers import UtilisateurTokenObtainPairSerializer
+
+logger = logging.getLogger("pgnoc.oauth")
 
 # Points de terminaison fixes de Google OAuth 2.0 / OpenID Connect.
 _AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth"
@@ -69,7 +73,7 @@ class ConnexionGoogleAPIView(APIView):
         if not settings.GOOGLE_OAUTH_CLIENT_ID:
             return Response(
                 {"detail": "L'authentification Google n'est pas configurée."},
-                status=500,
+                status=status.HTTP_501_NOT_IMPLEMENTED,
             )
 
         state = secrets.token_urlsafe(32)
@@ -164,6 +168,7 @@ class ConnexionGoogleCallbackView(APIView):
             reponse.raise_for_status()
             access_token = reponse.json()["access_token"]
         except (requests.RequestException, KeyError, ValueError):
+            logger.warning("Échec d'échange du code Google token : code=%s", code[:8] + "…" if code else None)
             return None
 
         try:
@@ -175,6 +180,7 @@ class ConnexionGoogleCallbackView(APIView):
             profil.raise_for_status()
             return profil.json()
         except (requests.RequestException, ValueError):
+            logger.warning("Échec de récupération du profil Google (access_token=%s…)", access_token[:8])
             return None
 
 
@@ -193,19 +199,25 @@ def _obtenir_ou_creer_investisseur_google(email, google_id, identite):
     try:
         utilisateur = Utilisateur.objects.get(email__iexact=email)
     except Utilisateur.DoesNotExist:
-        utilisateur = Utilisateur.objects.create_user(
-            email=email,
-            password=secrets.token_urlsafe(48),  # mot de passe inutilisable
-            role=Role.Code.INVESTISSEUR,
-            prenom=identite.get("given_name", ""),
-            nom=identite.get("family_name", ""),
-        )
+        try:
+            with transaction.atomic():
+                utilisateur = Utilisateur.objects.create_user(
+                    email=email,
+                    password=secrets.token_urlsafe(48),
+                    role=Role.Code.INVESTISSEUR,
+                    prenom=identite.get("given_name", ""),
+                    nom=identite.get("family_name", ""),
+                )
+        except IntegrityError:
+            try:
+                utilisateur = Utilisateur.objects.get(email__iexact=email)
+            except Utilisateur.DoesNotExist:
+                logger.warning(
+                    "Race condition OAuth Google : utilisateur créé puis supprimé pour email=%s",
+                    email[:8] + "…" if email else None,
+                )
+                return None
 
-    # Guard réglementaire : le flux Google n'existe que pour les
-    # INVESTISSEURS. Un email déjà utilisé par un compte AGENT_SGI /
-    # ADMIN_SGI / ADMIN_GENERAL (privilégié, sans profil investisseur)
-    # est un conflit à refuser — jamais un compte à relier (issue de
-    # revue de code : un 500 puis un JWT privilégié étaient possibles).
     if utilisateur.role.code != Role.Code.INVESTISSEUR:
         return None
 
@@ -213,7 +225,15 @@ def _obtenir_ou_creer_investisseur_google(email, google_id, identite):
     if profil.google_id and profil.google_id != google_id:
         return None
     if profil.google_id != google_id:
-        profil.google_id = google_id
-        profil.save(update_fields=["google_id"])
+        try:
+            with transaction.atomic():
+                profil.google_id = google_id
+                profil.save(update_fields=["google_id"])
+        except IntegrityError:
+            logger.warning(
+                "Conflit google_id lors de la mise à jour pour email=%s",
+                email[:8] + "…" if email else None,
+            )
+            return None
 
     return utilisateur

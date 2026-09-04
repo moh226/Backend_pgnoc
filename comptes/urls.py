@@ -9,10 +9,15 @@ from comptes.views_profil import ChangerMotDePasseAPIView, ProfilMoiAPIView
 
 app_name = "comptes"
 
+
+class TokenRefreshThrottledView(TokenRefreshView):
+    """Version de TokenRefreshView avec limitation de débit (anti brute-force)."""
+    throttle_scope = "connexion"
+
 urlpatterns = [
     path("register/", InscriptionInvestisseurAPIView.as_view(), name="register"),
     path("login/", ConnexionAPIView.as_view(), name="login"),
-    path("login/refresh/", TokenRefreshView.as_view(), name="login-refresh"),
+    path("login/refresh/", TokenRefreshThrottledView.as_view(), name="login-refresh"),
     path("moi/profil/", ProfilMoiAPIView.as_view(), name="moi-profil"),
     path("moi/mot-de-passe/", ChangerMotDePasseAPIView.as_view(), name="moi-mot-de-passe"),
     path(

@@ -101,11 +101,11 @@ class SGIFicheSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
     @extend_schema_field(PresentationSectionsSerializer)
-    def get_presentation(self, sgi) -> dict[str, object]:
+    def get_presentation(self, sgi) -> dict[str, object] | None:
         try:
             presentation = sgi.presentation
         except InformationPresentation.DoesNotExist:
-            return PresentationSectionsSerializer({}).data
+            return None
         return sections_de_presentation(presentation)
 
     @extend_schema_field(serializers.DictField)

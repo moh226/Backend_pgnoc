@@ -1,29 +1,40 @@
-# Environnement de développement/production locale : API + PostgreSQL + MinIO.
+# Environnement de développement/production locale : API + PostgreSQL + MinIO + Redis + Celery.
 #
-#   docker compose up --build
+#   1. Copier .env.example en .env et renseigner les secrets
+#   2. docker compose up --build
 #   # migrations appliquées automatiquement au démarrage (point d'entrée)
 
 services:
   db:
     image: postgres:16-alpine
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-pgnoc_ti}
-      POSTGRES_USER: ${POSTGRES_USER:-pgnoc_user}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pgnoc_ti_secret}
+      POSTGRES_DB: ${POSTGRES_DB:?requis}
+      POSTGRES_USER: ${POSTGRES_USER:?requis}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?requis}
     volumes:
       - pg_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pgnoc_user} -d ${POSTGRES_DB:-pgnoc_ti}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
       retries: 10
 
   minio:
     image: minio/minio:latest
     command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:?requis}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:?requis}
     volumes:
       - minio_data:/data
     ports:
@@ -40,23 +51,32 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_healthy
       minio:
         condition: service_healthy
     environment:
-      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-dev-only-secret-key}
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?requis}
+      DJANGO_SIGNING_KEY: ${DJANGO_SIGNING_KEY:?requis}
       DJANGO_DEBUG: ${DJANGO_DEBUG:-False}
-      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}
-      POSTGRES_DB: ${POSTGRES_DB:-pgnoc_ti}
-      POSTGRES_USER: ${POSTGRES_USER:-pgnoc_user}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pgnoc_ti_secret}
+      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:?requis}
+      DJANGO_SECURE_SSL_REDIRECT: "False"
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_HOST: db
       POSTGRES_PORT: 5432
-      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
-      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
-      MINIO_BUCKET_NAME: ${MINIO_BUCKET_NAME:-pgnoc-ti-documents}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+      MINIO_BUCKET_NAME: ${MINIO_BUCKET_NAME:?requis}
       MINIO_ENDPOINT_URL: http://minio:9000
       MINIO_USE_SSL: "False"
       DJANGO_LOG_TO_FILE: "False"
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      REDIS_URL: redis://redis:6379/1
+      EMAIL_BACKEND: django.core.mail.backends.console.EmailBackend
+      DEFAULT_FROM_EMAIL: ${DEFAULT_FROM_EMAIL:-noreply@pgnoc-ti.local}
       GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
       GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
       GOOGLE_OAUTH_CALLBACK_URL: ${GOOGLE_OAUTH_CALLBACK_URL:-}
@@ -67,12 +87,38 @@ services:
       sh -c "python manage.py migrate --noinput &&
              python manage.py collectstatic --noinput &&
              gunicorn pgnoc.wsgi:application --bind 0.0.0.0:8000
-             --workers 4 --timeout 60"
+             --workers 4 --timeout 60
+             --access-logfile - --error-logfile -"
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://localhost:8000/healthz/')\""]
       interval: 10s
       timeout: 5s
       retries: 5
+
+  celery_worker:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY}
+      DJANGO_SIGNING_KEY: ${DJANGO_SIGNING_KEY}
+      DJANGO_DEBUG: ${DJANGO_DEBUG:-False}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+      MINIO_BUCKET_NAME: ${MINIO_BUCKET_NAME}
+      MINIO_ENDPOINT_URL: http://minio:9000
+      MINIO_USE_SSL: "False"
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+    command: celery -A pgnoc worker --loglevel=info
 
 volumes:
   pg_data:

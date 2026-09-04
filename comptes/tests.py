@@ -61,6 +61,22 @@ class InscriptionInvestisseurAPITests(APITestCase):
         self.assertEqual(reponse.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("email", reponse.data)
 
+    def test_inscription_envoie_un_email_de_confirmation(self):
+        donnees = {
+            "email": "inv@example.com",
+            "prenom": "Awa",
+            "nom": "Koné",
+            "password": "S3curise!2026",
+            "password_confirmation": "S3curise!2026",
+        }
+        reponse = self.client.post(self.url, donnees)
+        self.assertEqual(reponse.status_code, status.HTTP_201_CREATED)
+
+        from django.core.mail import outbox
+        self.assertEqual(len(outbox), 1)
+        self.assertIn("Bienvenue", outbox[0].subject)
+        self.assertEqual(outbox[0].to, ["inv@example.com"])
+
 
 class ConnexionAPITests(APITestCase):
     """POST /api/comptes/login/"""
@@ -266,10 +282,10 @@ class GoogleOAuthAPITests(APITestCase):
         self.assertEqual(parametres["scope"], ["openid email profile"])
         self.assertEqual(parametres["client_id"], [GOOGLE_CONFIG["GOOGLE_OAUTH_CLIENT_ID"]])
 
-    def test_login_sans_configuration_renvoie_500(self):
+    def test_login_sans_configuration_renvoie_501(self):
         with override_settings(GOOGLE_OAUTH_CLIENT_ID=""):
             reponse = self.client.get(self.url_login)
-            self.assertEqual(reponse.status_code, 500)
+            self.assertEqual(reponse.status_code, 501)
 
     @mock.patch("comptes.oauth.requests.get", return_value=_FakeReponse(IDENTITE_GOOGLE))
     @mock.patch(

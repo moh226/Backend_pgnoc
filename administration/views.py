@@ -281,20 +281,22 @@ class DashboardAPIView(generics.GenericAPIView):
     def get(self, request):
         aujourd_hui = timezone.localdate()
 
-        sgi_toutes = SGI.objects.prefetch_related("convention")
+        sgi_toutes = list(SGI.objects.prefetch_related("convention"))
         sans_convention = sum(
             1 for sgi in sgi_toutes
             if not (hasattr(sgi, "convention") and sgi.convention.est_publiee())
         )
 
-        par_statut = {
-            statut: Dossier.objects.filter(statut=statut).count()
-            for statut in Dossier.Statut.values
-        }
-        par_role = {
-            role.code: Utilisateur.objects.filter(role__code=role.code).count()
-            for role in Role.objects.all()
-        }
+        par_statut = dict(
+            Dossier.objects.values_list("statut")
+            .annotate(nb=Count("id"))
+            .values_list("statut", "nb")
+        )
+        par_role = dict(
+            Utilisateur.objects.values_list("role__code")
+            .annotate(nb=Count("id"))
+            .values_list("role__code", "nb")
+        )
 
         activite_recente = [
             {
@@ -317,7 +319,7 @@ class DashboardAPIView(generics.GenericAPIView):
                 "par_statut": par_statut,
             },
             "sgi": {
-                "total": sgi_toutes.count(),
+                "total": len(sgi_toutes),
                 "actives": SGI.objects.filter(est_active=True).count(),
                 "sans_convention_publiee": sans_convention,
             },

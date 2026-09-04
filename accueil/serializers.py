@@ -2,30 +2,9 @@
 
 from rest_framework import serializers
 
-from accueil.models import BlocAccueil
-
-_CLEFS_PAR_TYPE = {
-    BlocAccueil.TypeBloc.HERO: ("cta_principal", "lien_principal",
-                                "cta_secondaire", "lien_secondaire"),
-    BlocAccueil.TypeBloc.APPEL_ACTION: ("cta", "lien", "slogan"),
-}
-
-_LISTES_PAR_TYPE = {
-    BlocAccueil.TypeBloc.REASSURANCE: ("mentions", "str"),
-    BlocAccueil.TypeBloc.CHIFFRES: ("chiffres", "chiffre"),
-    BlocAccueil.TypeBloc.ETAPES: ("etapes", "etape"),
-    BlocAccueil.TypeBloc.SECURITE: ("cartes", "carte"),
-    BlocAccueil.TypeBloc.TEMOIGNAGES: ("temoignages", "temoignage"),
-    BlocAccueil.TypeBloc.FAQ: ("questions", "question"),
-}
-
-_CLEFS_OBJETS = {
-    "chiffre": ("valeur", "libelle"),
-    "etape": ("titre", "description"),
-    "carte": ("titre", "description"),
-    "temoignage": ("nom", "role", "texte"),
-    "question": ("question", "reponse"),
-}
+from accueil.models import (
+    BlocAccueil, CLEFS_OBJETS, CLEFS_PAR_TYPE, LISTES_PAR_TYPE,
+)
 
 
 def _valider_contenu(type_bloc, contenu):
@@ -41,12 +20,12 @@ def _valider_contenu(type_bloc, contenu):
         raise ValidationError(
             {"contenu": "Le contenu doit être un dictionnaire."}
         )
-    for cle in _CLEFS_PAR_TYPE.get(type_bloc, ()):
+    for cle in CLEFS_PAR_TYPE.get(type_bloc, ()):
         if cle in contenu and not isinstance(contenu[cle], str):
             raise ValidationError(
                 {"contenu": f"La clé `{cle}` doit être une chaîne."}
             )
-    entree = _LISTES_PAR_TYPE.get(type_bloc)
+    entree = LISTES_PAR_TYPE.get(type_bloc)
     if entree is not None:
         cle, nom_entite = entree
         valeur = contenu.get(cle, [])
@@ -66,7 +45,7 @@ def _valider_contenu(type_bloc, contenu):
                     raise ValidationError(
                     {"contenu": f"Chaque élément de `{cle}` doit être un objet."}
                 )
-            for champ in _CLEFS_OBJETS[nom_entite]:
+            for champ in CLEFS_OBJETS[nom_entite]:
                 if champ in element and not isinstance(element[champ], str):
                     raise ValidationError(
                         {"contenu": f"Le champ `{champ}` doit être une chaîne."}

@@ -69,6 +69,8 @@ class ChampKYCAdminSerializer(serializers.ModelSerializer):
         if champ_parent is None:
             return None
         etape = self.initial_data.get("etape")
+        if etape is None and self.instance:
+            etape = self.instance.etape_id
         if etape and str(champ_parent.etape_id) != str(etape):
             raise serializers.ValidationError(
                 "Le champ parent doit appartenir à la même étape."

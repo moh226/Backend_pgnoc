@@ -13,7 +13,9 @@ est plafonnée.
 
 import uuid
 
+import logging
 from django.core.files.storage import default_storage
+from django.db import IntegrityError, transaction
 from drf_spectacular.utils import extend_schema, inline_serializer
 from rest_framework import generics, parsers, permissions, serializers, status
 from rest_framework.response import Response
@@ -27,6 +29,8 @@ from sgi.serializers import (
     PresentationSectionsSerializer,
     sections_de_presentation,
 )
+
+logger = logging.getLogger("pgnoc.sgi")
 
 # Signature binaire d'un fichier PDF (« %PDF »).
 _MAGIC_PDF = b"\x25\x50\x44\x46"
@@ -96,9 +100,17 @@ def _obtenir_ou_creer(model, **kwargs):
 def _gerer_convention(request):
     """Lit ou écrit la convention de la SGI de l'admin connecté."""
     sgi_id = request.user.sgi_id
-    convention, _ = _obtenir_ou_creer(ConventionTarifaire, sgi_id=sgi_id)
 
     if request.method == "GET":
+        convention = ConventionTarifaire.objects.filter(sgi_id=sgi_id).first()
+        if not convention:
+            return Response({
+                "titre": "",
+                "fichier": "",
+                "url_signee": "",
+                "date_publication": None,
+                "date_modification": None,
+            })
         return Response({
             "titre": convention.titre,
             "fichier": convention.fichier_pdf.name or "",
@@ -108,6 +120,7 @@ def _gerer_convention(request):
             "date_modification": convention.date_modification,
         })
 
+    convention, _ = _obtenir_ou_creer(ConventionTarifaire, sgi_id=sgi_id)
     fichier = request.FILES.get("fichier_pdf")
     ancien = convention.fichier_pdf.name or ""
     avant = {
@@ -122,15 +135,30 @@ def _gerer_convention(request):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         chemin = f"sgi/conventions/{sgi_id}/{uuid.uuid4()}.pdf"
-        convention.fichier_pdf.name = default_storage.save(chemin, fichier)
-        if ancien and ancien != convention.fichier_pdf.name:
-            try:
-                default_storage.delete(ancien)
-            except Exception:
-                pass
-
-    convention.titre = request.data.get("titre", convention.titre)
-    convention.save(update_fields=["titre", "fichier_pdf", "date_modification"])
+        try:
+            with transaction.atomic():
+                convention.fichier_pdf.name = default_storage.save(chemin, fichier)
+                if ancien and ancien != convention.fichier_pdf.name:
+                    try:
+                        default_storage.delete(ancien)
+                    except Exception as exc:
+                        logger.warning(
+                            "Échec de suppression du fichier de convention ancien (%s) : %s",
+                            ancien, exc,
+                        )
+                convention.titre = request.data.get("titre", convention.titre)
+                convention.save(update_fields=["titre", "fichier_pdf", "date_modification"])
+        except IntegrityError:
+            logger.warning("IntegrityError lors de la mise à jour de la convention SGI=%s", sgi_id)
+            return Response(
+                {"detail": "Erreur de cohérence lors de la mise à jour."},
+                status=status.HTTP_409_CONFLICT,
+            )
+    else:
+        nouveau_titre = request.data.get("titre")
+        if nouveau_titre is not None and nouveau_titre != convention.titre:
+            convention.titre = nouveau_titre
+            convention.save(update_fields=["titre", "date_modification"])
 
     # Document réglementaire : toute publication/modification est
     # tracée dans le journal d'audit (conformité CREPMF).
@@ -217,31 +245,32 @@ class PresentationAdminAPIView(generics.GenericAPIView):
         serializer.is_valid(raise_exception=True)
         donnees = serializer.validated_data
 
-        avant = sections_de_presentation(presentation)
-        for champ in (
-            "forme_sociale", "date_creation_societe", "capital_social",
-            "numero_agrement", "date_agrement", "autorite_agrement",
-            "mission", "vision", "ancrage_regional",
-            "adresse", "telephone", "email_contact", "site_web",
-        ):
-            if champ in donnees:
-                setattr(presentation, champ, donnees[champ])
-        presentation.save()
+        with transaction.atomic():
+            avant = sections_de_presentation(presentation)
+            for champ in (
+                "forme_sociale", "date_creation_societe", "capital_social",
+                "numero_agrement", "date_agrement", "autorite_agrement",
+                "mission", "vision", "ancrage_regional",
+                "adresse", "telephone", "email_contact", "site_web",
+            ):
+                if champ in donnees:
+                    setattr(presentation, champ, donnees[champ])
+            presentation.save()
 
-        self._remplacer_listes(presentation, "activites", donnees.get("activites"))
-        self._remplacer_listes(presentation, "membres", donnees.get("membres"))
-        self._remplacer_listes(presentation, "references", donnees.get("references"))
+            self._remplacer_listes(presentation, "activites", donnees.get("activites"))
+            self._remplacer_listes(presentation, "membres", donnees.get("membres"))
+            self._remplacer_listes(presentation, "references", donnees.get("references"))
 
-        apres = sections_de_presentation(presentation)
-        journaliser(
-            request.user,
-            JournalAudit.Action.MODIFICATION_PRESENTATION,
-            "InformationPresentation",
-            str(presentation.sgi_id),
-            avant=avant,
-            apres=apres,
-            requete=request,
-        )
+            apres = sections_de_presentation(presentation)
+            journaliser(
+                request.user,
+                JournalAudit.Action.MODIFICATION_PRESENTATION,
+                "InformationPresentation",
+                str(presentation.sgi_id),
+                avant=avant,
+                apres=apres,
+                requete=request,
+            )
         return Response(self._sortie(presentation))
 
     @staticmethod
@@ -249,7 +278,9 @@ class PresentationAdminAPIView(generics.GenericAPIView):
         """Écrit l'intégralité d'une liste ordonnée si elle est fournie."""
         if elements is None:
             return
-        relation = getattr(presentation, nom)
-        relation.all().delete()
-        for position, element in enumerate(elements):
-            relation.create(ordre=position, **element)
+        with transaction.atomic():
+            relation = getattr(presentation, nom)
+            relation.all().delete()
+            for position, element in enumerate(elements):
+                element.pop("ordre", None)
+                relation.create(ordre=position, **element)

@@ -12,7 +12,7 @@ from dossiers.views import (
 )
 from dossiers.views_agent import (
     DossierPrendreEnChargeAPIView, DossierValiderAPIView, DossierRejeterAPIView,
-    ValeurChampCommenterAPIView,
+    ValeurChampCommenterAPIView, DossierTransfererAPIView,
 )
 from dossiers.views_kyc_admin import (
     ChampKYCListCreateAPIView, ChampKYCRetrieveUpdateDestroyAPIView,
@@ -75,6 +75,11 @@ urlpatterns = [
     path("dossiers/<uuid:dossier_pk>/rejeter/",
          DossierRejeterAPIView.as_view(),
          name="dossier-rejeter",
+         ),
+
+    path("dossiers/<uuid:dossier_pk>/transferer/",
+         DossierTransfererAPIView.as_view(),
+         name="dossier-transferer",
          ),
 
     path(

@@ -260,7 +260,8 @@ class ChampKYC(models.Model):
     def save(self, *args, **kwargs):
         if not self.code:
             self.code = slugify(self.nom, allow_unicode=False).replace("-", "_")
-        self.full_clean()
+        if kwargs.get("update_fields") is None:
+            self.full_clean()
         super().save(*args, **kwargs)
 
     def __str__(self):
@@ -327,15 +328,10 @@ class Dossier(models.Model):
         "comptes.Utilisateur", verbose_name=_("Agent en charge"),
         related_name="dossiers_instruits", on_delete=models.PROTECT,
         null=True, blank=True,
-        limit_choices_to={"role__code": "AGENT_SGI"},
+        limit_choices_to={"role__code__in": ["AGENT_SGI", "ADMIN_SGI"]},
         help_text=_(
-            "Renseigné quand un Agent SGI prend en charge le dossier "
-            "(transition SOUMIS → EN_INSTRUCTION). Nommer le champ "
-            "`agent` (plutôt que `agent_id`) est la convention Django "
-            "idiomatique : le framework crée automatiquement la colonne "
-            "SQL `agent_id`, identique à celle du document de conception — "
-            "`dossier.agent` donne l'objet Utilisateur, `dossier.agent_id` "
-            "donne directement l'UUID sans requête supplémentaire."
+            "Renseigné quand un Agent SGI ou Admin SGI prend en charge le dossier "
+            "(transition SOUMIS → EN_INSTRUCTION)."
         ),
     )
     statut = models.CharField(
@@ -436,7 +432,9 @@ class Dossier(models.Model):
             )
 
     def save(self, *args, **kwargs):
-        self.full_clean()
+        update_fields = kwargs.get("update_fields")
+        if update_fields is None:
+            self.full_clean()
         if self.reference:
             super().save(*args, **kwargs)
             return
@@ -679,7 +677,8 @@ class ValeurChamp(models.Model):
             raise ValidationError(erreurs)
 
     def save(self, *args, **kwargs):
-        self.full_clean()
+        if kwargs.get("update_fields") is None:
+            self.full_clean()
         super().save(*args, **kwargs)
 
     def __str__(self):

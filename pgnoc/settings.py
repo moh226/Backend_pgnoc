@@ -34,6 +34,9 @@ SECRET_KEY = config("DJANGO_SECRET_KEY")
 # mode debug en production.
 DEBUG = config("DJANGO_DEBUG", default=False, cast=bool)
 
+# Détecte si on est dans une exécution de tests (manage.py test).
+EXECUTION_TESTS = "test" in sys.argv
+
 ALLOWED_HOSTS = config("DJANGO_ALLOWED_HOSTS", default="", cast=Csv())
 
 # En développement (DEBUG=True), on tolère des ALLOWED_HOSTS vides en
@@ -162,18 +165,30 @@ WSGI_APPLICATION = 'pgnoc.wsgi.application'
 
 
 # Database
-# https://docs.djangoproject.com/en/6.0/ref/settings/#databases
+# https://docs.djangoproject.com/6.0/ref/settings/#databases
 
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.postgresql",
-        "NAME": config("POSTGRES_DB"),
-        "USER": config("POSTGRES_USER"),
-        "PASSWORD": config("POSTGRES_PASSWORD"),
-        "HOST": config("POSTGRES_HOST", default="localhost"),
-        "PORT": config("POSTGRES_PORT", default="5432"),
+# En développement local sans PostgreSQL, on bascule automatiquement
+# sur SQLite :aucune installation externe nécessaire.
+_POSTGRES_DB = config("POSTGRES_DB", default="")
+if _POSTGRES_DB:
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.postgresql",
+            "NAME": _POSTGRES_DB,
+            "USER": config("POSTGRES_USER"),
+            "PASSWORD": config("POSTGRES_PASSWORD"),
+            "HOST": config("POSTGRES_HOST", default="localhost"),
+            "PORT": config("POSTGRES_PORT", default="5432"),
+        }
     }
-}
+else:
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BASE_DIR / "db.sqlite3",
+        }
+    }
+
 
 
 # MinIO (S3-compatible) pour les justificatifs. Si MINIO_ENDPOINT_URL est
@@ -209,6 +224,15 @@ AWS_S3_USE_SSL = config("MINIO_USE_SSL", default=False, cast=bool)
 AWS_DEFAULT_ACL = None  # PAS de fichier public par défaut
 AWS_QUERYSTRING_AUTH = True  # essentiel : force les URLs signées
 AWS_QUERYSTRING_EXPIRE = 600  # URL valide 10 minutes seulement
+
+# Garde-fou : hors DEBUG, MinIO est requis pour les justificatifs.
+# En mode local (DEBUG=True), le FileSystemStorage sert les fichiers
+# via /media/ mais les URLs ne sont ni signées ni expirantes.
+if not EXECUTION_TESTS and not DEBUG and not MINIO_ENDPOINT_URL:
+    raise RuntimeError(
+        "MINIO_ENDPOINT_URL doit être renseigné en production. "
+        "Les justificatifs KYC nécessitent un stockage S3 signé."
+    )
 
 
 # Hachage des mots de passe — exigence du cahier des charges (Argon2/PBKDF2).
@@ -278,6 +302,8 @@ REST_FRAMEWORK = {
     # table d'un coup. Taille de page surchargeable par variable d'env.
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": config("DRF_PAGE_SIZE", default=25, cast=int),
+    "PAGE_SIZE_QUERY_PARAM": "page_size",
+    "MAX_PAGE_SIZE": 100,
     # Le client peut demander une taille de page explicite (`?page_size=50`),
     # bornée par PageNumberPagination (max 100). Sans paramètre, c'est
     # `PAGE_SIZE` qui s'applique.
@@ -301,17 +327,56 @@ REST_FRAMEWORK = {
 
 SIMPLE_JWT = {
     # Access token à durée de vie courte : exigence de sécurité du
-    # cahier des charges (section 6, Sécurité).
-    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=15),
-    "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
+    # cahier des charges (section 8.1) — 60 minutes.
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=60),
+    # Refresh token : 24 heures (cahier des charges section 8.1).
+    "REFRESH_TOKEN_LIFETIME": timedelta(hours=24),
     "ROTATE_REFRESH_TOKENS": True,
     "BLACKLIST_AFTER_ROTATION": True,
     "UPDATE_LAST_LOGIN": True,
     "ALGORITHM": "HS256",
+    # Clé de signature distincte de SECRET_KEY pour isoler les tokens JWT
+    # des autres mécanismes (session, CSRF, HMAC preuves de vie).
+    "SIGNING_KEY": config("DJANGO_SIGNING_KEY", default=SECRET_KEY),
     "AUTH_HEADER_TYPES": ("Bearer",),
     "USER_ID_FIELD": "id",
     "USER_ID_CLAIM": "user_id",
 }
+
+
+# ─────────────────────────────────────────────────────────────
+# Celery — tâches asynchrones (notifications, emails, cache…).
+# Le broker et le backend utilisent Redis. En dev local, le
+# docker-compose lance Redis sur le port 6379.
+# ─────────────────────────────────────────────────────────────
+CELERY_BROKER_URL = config("CELERY_BROKER_URL", default="redis://localhost:6379/0")
+CELERY_RESULT_BACKEND = config("CELERY_RESULT_BACKEND", default="redis://localhost:6379/0")
+CELERY_ACCEPT_CONTENT = ["json"]
+CELERY_TASK_SERIALIZER = "json"
+CELERY_RESULT_SERIALIZER = "json"
+CELERY_TIMEZONE = TIME_ZONE
+
+
+# ─────────────────────────────────────────────────────────────
+# Email — envoi transactionnel (UC02 inscription, etc.).
+# En dev/debug, le backend console imprime les emails dans le
+# terminal. En prod, utiliser EMAIL_BACKEND du .env (ex.
+# django.core.mail.backends.smtp.EmailBackend).
+# ─────────────────────────────────────────────────────────────
+EMAIL_BACKEND = config(
+    "EMAIL_BACKEND",
+    default=(
+        "django.core.mail.backends.console.EmailBackend"
+        if DEBUG
+        else "django.core.mail.backends.smtp.EmailBackend"
+    ),
+)
+DEFAULT_FROM_EMAIL = config("DEFAULT_FROM_EMAIL", default="noreply@pgnoc-ti.local")
+EMAIL_HOST = config("EMAIL_HOST", default="localhost")
+EMAIL_PORT = config("EMAIL_PORT", default=587, cast=int)
+EMAIL_USE_TLS = config("EMAIL_USE_TLS", default=True, cast=bool)
+EMAIL_HOST_USER = config("EMAIL_HOST_USER", default="")
+EMAIL_HOST_PASSWORD = config("EMAIL_HOST_PASSWORD", default="")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -357,7 +422,59 @@ GOOGLE_OAUTH_FRONT_REDIRECT = config(
 # console : plusieurs tests provoquent VOLONTAIREMENT des pannes
 # (échec d'audit, notification impossible) et leurs traces rendraient
 # la sortie de test illisible.
-EXECUTION_TESTS = "test" in sys.argv
+# En mode test, les tâches s'exécutent dans le processus (pas de broker requis).
+CELERY_TASK_ALWAYS_EAGER = EXECUTION_TESTS
+
+
+# ─────────────────────────────────────────────────────────────
+# Cache Redis (§8.2 Performance) — formulaires KYC et données
+# fréquemment accédées.
+# En dev local sans Redis, le cache « locmem » évite les erreurs.
+# ─────────────────────────────────────────────────────────────
+_redis_url = config("REDIS_URL", default="redis://localhost:6379/1")
+if EXECUTION_TESTS:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+        }
+    }
+else:
+    import socket
+    _redis_available = False
+    try:
+        _sock = socket.create_connection((_redis_url.split("://")[1].split(":")[0], 6379), timeout=1)
+        _sock.close()
+        _redis_available = True
+    except OSError:
+        pass
+    if _redis_available:
+        CACHES = {
+            "default": {
+                "BACKEND": "django.core.cache.backends.redis.RedisCache",
+                "LOCATION": _redis_url,
+                "KEY_PREFIX": "pgnoc",
+                "TIMEOUT": 15 * 60,
+            }
+        }
+    else:
+        CACHES = {
+            "default": {
+                "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            }
+        }
+
+
+# ─────────────────────────────────────────────────────────────
+# Garde-fou : hors DEBUG, le moteur DOIT être PostgreSQL.
+# SQLite ne supporte pas les triggers RunSQL, les verrous
+# SELECT FOR UPDATE ni les transactions concurrentes.
+# ─────────────────────────────────────────────────────────────
+if not EXECUTION_TESTS and not DEBUG and "sqlite" in DATABASES["default"]["ENGINE"]:
+    raise RuntimeError(
+        "Le moteur de base de données doit être PostgreSQL en production. "
+        "Configurer POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD, "
+        "POSTGRES_HOST et POSTGRES_PORT."
+    )
 
 LOG_LEVEL = config("DJANGO_LOG_LEVEL", default="INFO" if not DEBUG else "DEBUG")
 LOG_TO_FILE = config(

@@ -79,15 +79,6 @@ class BlocAccueilAdminDetailAPIView(generics.RetrieveUpdateAPIView):
         )
 
     def perform_update(self, serializer):
-        import sys
-
-        print(
-            f"[DEBUG-ACCUEIL] content_type={self.request.content_type} "
-            f"POST_keys={sorted(self.request.POST.keys())} "
-            f"FILES_keys={list(self.request.FILES.keys())}",
-            file=sys.stderr,
-            flush=True,
-        )
         avant = _snapshot_bloc(self.get_object())
         bloc = serializer.save()
         apres = _snapshot_bloc(bloc)
@@ -123,11 +114,13 @@ class BlocAccueilOrdreAPIView(generics.GenericAPIView):
         donnees = serializer.validated_data
 
         if donnees.get("blocs"):
-            for element in donnees["blocs"]:
-                BlocAccueil.objects.filter(type=element["type"]).update(
-                    ordre=element["ordre"],
-                    actif=element["actif"],
-                )
+            from django.db import transaction
+            with transaction.atomic():
+                for element in donnees["blocs"]:
+                    BlocAccueil.objects.filter(type=element["type"]).update(
+                        ordre=element["ordre"],
+                        actif=element["actif"],
+                    )
 
         if donnees.get("publier"):
             BlocAccueil.objects.filter(actif=True).update(

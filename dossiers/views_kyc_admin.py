@@ -23,6 +23,7 @@ from dossiers.models import ChampKYC, Dossier, EtapeKYC, ValeurChamp
 from dossiers.serializers_kyc_admin import (
     ChampKYCAdminSerializer, EtapeKYCAdminSerializer,
 )
+from dossiers.utils import est_uuid_valide
 
 
 def _apercu_etape(etape):
@@ -38,17 +39,6 @@ def _apercu_champ(champ):
         "actif": champ.actif,
         "champ_parent": str(champ.champ_parent_id) if champ.champ_parent_id else None,
     }
-
-
-def _est_uuid_valide(valeur):
-    """True si `valeur` est un UUID bien formé (évite un 500 sur filtre)."""
-    import uuid
-
-    try:
-        uuid.UUID(str(valeur))
-        return True
-    except (ValueError, AttributeError):
-        return False
 
 
 class EtapeKYCListCreateAPIView(generics.ListCreateAPIView):
@@ -92,6 +82,12 @@ class EtapeKYCRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView
 
     def delete(self, request, *args, **kwargs):
         etape = self.get_object()
+        if Dossier.objects.filter(etape_courante=etape).exists():
+            return Response(
+                {"detail": "Des dossiers référencent cette étape : "
+                           "désactivez-la plutôt que de la supprimer."},
+                status=status.HTTP_409_CONFLICT,
+            )
         if ValeurChamp.objects.filter(champ__etape=etape).exists():
             return Response(
                 {"detail": "Des valeurs ont déjà été saisies pour cette "
@@ -126,7 +122,7 @@ class ChampKYCListCreateAPIView(generics.ListCreateAPIView):
         qs = ChampKYC.objects.filter(etape__sgi_id=self.request.user.sgi_id)
         etape = self.request.query_params.get("etape")
         if etape:
-            if not _est_uuid_valide(etape):
+            if not est_uuid_valide(etape):
                 raise ValidationError(
                     {"etape": "Le paramètre `etape` doit être un identifiant UUID valide."}
                 )

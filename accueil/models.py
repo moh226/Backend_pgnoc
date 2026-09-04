@@ -78,3 +78,31 @@ class BlocAccueil(models.Model):
 
     def __str__(self):
         return f"{self.get_type_display()} ({self.type})"
+
+
+# ---------------------------------------------------------------------------
+# Constantes de validation du contenu structuré (partagées avec serializers)
+# ---------------------------------------------------------------------------
+
+CLEFS_PAR_TYPE = {
+    BlocAccueil.TypeBloc.HERO: ("cta_principal", "lien_principal",
+                                "cta_secondaire", "lien_secondaire"),
+    BlocAccueil.TypeBloc.APPEL_ACTION: ("cta", "lien", "slogan"),
+}
+
+LISTES_PAR_TYPE = {
+    BlocAccueil.TypeBloc.REASSURANCE: ("mentions", "str"),
+    BlocAccueil.TypeBloc.CHIFFRES: ("chiffres", "chiffre"),
+    BlocAccueil.TypeBloc.ETAPES: ("etapes", "etape"),
+    BlocAccueil.TypeBloc.SECURITE: ("cartes", "carte"),
+    BlocAccueil.TypeBloc.TEMOIGNAGES: ("temoignages", "temoignage"),
+    BlocAccueil.TypeBloc.FAQ: ("questions", "question"),
+}
+
+CLEFS_OBJETS = {
+    "chiffre": ("valeur", "libelle"),
+    "etape": ("titre", "description"),
+    "carte": ("titre", "description"),
+    "temoignage": ("nom", "role", "texte"),
+    "question": ("question", "reponse"),
+}

@@ -6,6 +6,7 @@ PATCH /api/admin-general/accueil/<type> → édition d'un bloc
 POST /api/admin-general/accueil/ordre/  → ordre, activation, publication
 """
 
+from django.core.cache import cache
 from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
@@ -21,6 +22,7 @@ class AccueilPublicAPITests(APITestCase):
     url = reverse("accueil:public")
 
     def setUp(self):
+        cache.clear()
         self.bloc = BlocAccueil.objects.get(type=BlocAccueil.TypeBloc.HERO)
         self.bloc.actif = True
         self.bloc.date_publication = __import__("django").utils.timezone.now()

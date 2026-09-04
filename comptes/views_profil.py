@@ -76,8 +76,11 @@ class ChangerMotDePasseAPIView(APIView):
         utilisateur.set_password(serializer.validated_data["nouveau_mot_de_passe"])
         utilisateur.save(update_fields=["password"])
 
-        for jeton in OutstandingToken.objects.filter(user=utilisateur):
-            BlacklistedToken.objects.get_or_create(token=jeton)
+        jetons = OutstandingToken.objects.filter(user=utilisateur)
+        BlacklistedToken.objects.bulk_create(
+            [BlacklistedToken(token=j) for j in jetons],
+            ignore_conflicts=True,
+        )
 
         journaliser(
             utilisateur,

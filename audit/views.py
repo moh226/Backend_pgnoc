@@ -1,16 +1,28 @@
 """Lecture du journal d'audit : réservée à l'Admin Général (§8.3).
 
 Le journal est INSERT ONLY côté écriture ; ces vues n'exposent que la
-lecture (liste paginée, filtres, export CSV pour les contrôles CREPMF).
+lecture (liste paginée, filtres, export CSV/PDF pour les contrôles CREPMF).
 """
 
 import csv
+import io
 import json
 from datetime import date
 
-from django.http import HttpResponse
+from django.http import HttpResponse, StreamingHttpResponse
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiParameter, extend_schema, extend_schema_view
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.units import mm
+from reportlab.platypus import (
+    SimpleDocTemplate,
+    Table,
+    TableStyle,
+    Paragraph,
+    Spacer,
+)
 from rest_framework import generics, permissions
 from rest_framework import serializers as drf_serializers
 
@@ -105,25 +117,119 @@ class JournalAuditExportAPIView(generics.GenericAPIView):
     def get(self, request):
         entrees = _filtrer_journal(request.query_params).iterator()
 
-        response = HttpResponse(content_type="text/csv; charset=utf-8")
+        def lignes_csv():
+            buf = io.StringIO()
+            writer = csv.writer(buf)
+            writer.writerow([
+                "date_action", "email_utilisateur", "action", "entite_concernee",
+                "entite_id", "avant", "apres", "ip_address", "user_agent",
+            ])
+            yield buf.getvalue()
+            for entree in entrees:
+                buf = io.StringIO()
+                w = csv.writer(buf)
+                w.writerow([
+                    entree.date_action.isoformat(),
+                    _cellule_csv(entree.utilisateur.email if entree.utilisateur else ""),
+                    _cellule_csv(entree.action),
+                    _cellule_csv(entree.entite_concernee),
+                    _cellule_csv(entree.entite_id),
+                    _cellule_csv(json.dumps(entree.avant, ensure_ascii=False)) if entree.avant else "",
+                    _cellule_csv(json.dumps(entree.apres, ensure_ascii=False)) if entree.apres else "",
+                    _cellule_csv(entree.ip_address or ""),
+                    _cellule_csv(entree.user_agent),
+                ])
+                yield buf.getvalue()
+
+        response = StreamingHttpResponse(lignes_csv(), content_type="text/csv; charset=utf-8")
         response["Content-Disposition"] = (
             f'attachment; filename="journal-audit-{date.today().isoformat()}.csv"'
         )
-        writer = csv.writer(response)
-        writer.writerow([
-            "date_action", "email_utilisateur", "action", "entite_concernee",
-            "entite_id", "avant", "apres", "ip_address", "user_agent",
-        ])
-        for entree in entrees:
-            writer.writerow([
-                entree.date_action.isoformat(),
-                _cellule_csv(entree.utilisateur.email if entree.utilisateur else ""),
-                _cellule_csv(entree.action),
-                _cellule_csv(entree.entite_concernee),
-                _cellule_csv(entree.entite_id),
-                _cellule_csv(json.dumps(entree.avant, ensure_ascii=False)) if entree.avant else "",
-                _cellule_csv(json.dumps(entree.apres, ensure_ascii=False)) if entree.apres else "",
-                _cellule_csv(entree.ip_address or ""),
-                _cellule_csv(entree.user_agent),
-            ])
+        return response
+
+
+class JournalAuditExportPDFAPIView(generics.GenericAPIView):
+    """Export PDF du journal d'audit (filtres identiques à la liste).
+
+    GET /api/audit/journal/export-pdf/?action=…&date_debut=…&date_fin=…
+    """
+
+    permission_classes = (permissions.IsAuthenticated, EstAdminGeneral)
+    serializer_class = drf_serializers.Serializer
+
+    @extend_schema(
+        parameters=_PARAMETRES_JOURNAL,
+        responses={(200, "application/pdf"): OpenApiTypes.BINARY},
+        description="Export PDF du journal d'audit pour les contrôles réglementaires CREPMF.",
+    )
+    def get(self, request):
+        entrees = list(_filtrer_journal(request.query_params)[:500])
+
+        response = HttpResponse(content_type="application/pdf")
+        response["Content-Disposition"] = (
+            f'attachment; filename="journal-audit-{date.today().isoformat()}.pdf"'
+        )
+
+        doc = SimpleDocTemplate(
+            response,
+            pagesize=landscape(A4),
+            leftMargin=15 * mm,
+            rightMargin=15 * mm,
+            topMargin=20 * mm,
+            bottomMargin=15 * mm,
+        )
+
+        styles = getSampleStyleSheet()
+        elements = []
+
+        title = Paragraph(
+            f"Journal d'audit — {date.today().strftime('%d/%m/%Y')}",
+            styles["Title"],
+        )
+        elements.append(title)
+        elements.append(Spacer(1, 8 * mm))
+
+        if not entrees:
+            elements.append(Paragraph("Aucune entrée trouvée.", styles["Normal"]))
+        else:
+            header = [
+                "Date", "Utilisateur", "Action", "Entité",
+                "ID Entité", "Avant", "Après", "IP", "User-Agent",
+            ]
+            data = [header]
+            for entree in entrees:
+                avant = json.dumps(entree.avant, ensure_ascii=False)[:80] if entree.avant else ""
+                apres = json.dumps(entree.apres, ensure_ascii=False)[:80] if entree.apres else ""
+                data.append([
+                    entree.date_action.strftime("%d/%m/%Y %H:%M"),
+                    entree.utilisateur.email if entree.utilisateur else "",
+                    entree.action,
+                    entree.entite_concernee,
+                    entree.entite_id[:20] if entree.entite_id else "",
+                    avant,
+                    apres,
+                    entree.ip_address or "",
+                    (entree.user_agent or "")[:40],
+                ])
+
+            table = Table(data, repeatRows=1)
+            table.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1a237e")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("FONTSIZE", (0, 0), (-1, 0), 7),
+                ("FONTSIZE", (0, 1), (-1, -1), 6),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f5f5f5")]),
+            ]))
+            elements.append(table)
+
+            elements.append(Spacer(1, 5 * mm))
+            elements.append(Paragraph(
+                f"{len(entrees)} entrée(s) — export généré le {date.today().strftime('%d/%m/%Y')}",
+                styles["Normal"],
+            ))
+
+        doc.build(elements)
         return response

@@ -53,7 +53,8 @@ class DossierProprietaireMixin:
         le cache évite une requête SQL redondante à chaque appel.
         """
         if not hasattr(self, "_dossier_cache"):
-            dossier = get_object_or_404(Dossier, pk=self.kwargs["dossier_pk"])
+            dossier_pk = self.kwargs.get("dossier_pk") or self.kwargs.get("pk")
+            dossier = get_object_or_404(Dossier, pk=dossier_pk)
             if dossier.utilisateur_id != self.request.user.id:
                 self.permission_denied(self.request, message="Ce dossier ne vous appartient pas.")
             self._dossier_cache = dossier

@@ -34,7 +34,7 @@ class Role(models.Model):
     code = models.CharField(
         _("Code"), max_length=20, choices=Code.choices, unique=True, db_index=True,
     )
-    libelle = models.CharField(_("Libellé"), max_length=100)
+    libelle = models.CharField(_("Libellé"), max_length=100, unique=True)
     description = models.TextField(_("Description"), blank=True)
 
     class Meta:
@@ -104,14 +104,14 @@ class Utilisateur(AbstractBaseUser, PermissionsMixin):
         # la table Role (E041), le trigger l'établit au niveau base.
 
     def __str__(self):
-        return f"{self.email} ({self.role.libelle})"
+        return f"{self.email} ({self.role.code})"
 
     def get_full_name(self):
         full_name = f"{self.prenom} {self.nom}".strip()
         return full_name or self.email
 
     def get_short_name(self):
-        return self.prenom or self.email
+        return self.prenom or self.email.split("@")[0]
 
     def clean(self):
         """Valide la cohérence rôle / SGI avant sauvegarde."""

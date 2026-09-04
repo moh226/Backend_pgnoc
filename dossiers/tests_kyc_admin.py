@@ -53,7 +53,8 @@ class ParametrageEtapeKYCTests(APITestCase):
             format="json",
         )
         self.assertEqual(reponse.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(EtapeKYC.objects.latest("date_creation").sgi_id, self.sgi_a.pk)
+        etape_creee = EtapeKYC.objects.get(pk=reponse.data["id"])
+        self.assertEqual(etape_creee.sgi_id, self.sgi_a.pk)
 
     def test_liste_cloisonnee_aux_etapes_de_ma_sgi(self):
         EtapeKYC.objects.create(sgi=self.sgi_a, nom="Identité", ordre=1)
