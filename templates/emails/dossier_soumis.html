@@ -1,0 +1,13 @@
+{% extends "emails/base.html" %}
+{% block titre %}Dossier soumis{% endblock %}
+{% block contenu %}
+<p>Bonjour,</p>
+<p>Un nouveau dossier vient d'être soumis par <strong>{{ investisseur_email }}</strong>.</p>
+<table style="width: 100%; border-collapse: collapse; margin: 16px 0;">
+    <tr><td style="padding: 8px; font-weight: bold;">Référence</td><td style="padding: 8px;">{{ reference }}</td></tr>
+    <tr><td style="padding: 8px; font-weight: bold;">SGI</td><td style="padding: 8px;">{{ sgi_nom }}</td></tr>
+    <tr><td style="padding: 8px; font-weight: bold;">Date</td><td style="padding: 8px;">{{ date_soumission }}</td></tr>
+</table>
+<p>Merci de prendre en charge ce dossier dans les plus brefs délais.</p>
+<p>Cordialement,<br>L'équipe PGNOC-TI</p>
+{% endblock %}

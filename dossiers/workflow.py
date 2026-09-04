@@ -22,7 +22,12 @@ from audit.services import journaliser
 from audit.models import JournalAudit
 from dossiers.models import Dossier
 from dossiers.services import calculer_progression_pct
-from notifications.tasks import notifier_transition_task
+from notifications.tasks import (
+    notifier_transition_task,
+    envoyer_email_dossier_soumis,
+    envoyer_email_dossier_valide,
+    envoyer_email_dossier_rejete,
+)
 
 TRANSITIONS = {
     Dossier.Statut.BROUILLON: {Dossier.Statut.SOUMIS},
@@ -79,6 +84,17 @@ def transiter(dossier,
         notifier_transition_task.delay(str(dossier.pk), nouveau_statut)
     except Exception:
         logger.warning("Notification transition non dispatchée (Redis ?)", exc_info=True)
+
+    # Envoi email transactionnel selon la transition
+    try:
+        if nouveau_statut == Dossier.Statut.SOUMIS:
+            envoyer_email_dossier_soumis.delay(str(dossier.pk))
+        elif nouveau_statut == Dossier.Statut.VALIDE:
+            envoyer_email_dossier_valide.delay(str(dossier.pk))
+        elif nouveau_statut == Dossier.Statut.REJETE:
+            envoyer_email_dossier_rejete.delay(str(dossier.pk))
+    except Exception:
+        logger.warning("Email transactionnel non dispatché (Redis ?)", exc_info=True)
 
 
 def _appliquer_transition(dossier,

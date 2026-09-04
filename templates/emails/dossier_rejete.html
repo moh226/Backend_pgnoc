@@ -1,0 +1,14 @@
+{% extends "emails/base.html" %}
+{% block titre %}Dossier rejeté{% endblock %}
+{% block contenu %}
+<p>Bonjour <strong>{{ prenom|default:email }}</strong>,</p>
+<p>Votre dossier <strong>{{ reference }}</strong> a été rejeté par la SGI <strong>{{ sgi_nom }}</strong>.</p>
+{% if motif_rejet %}
+<p><strong>Motif du rejet :</strong> {{ motif_rejet }}</p>
+{% endif %}
+<p>Veuillez corriger les champs signalés puis resoumettre votre dossier.</p>
+<p style="text-align: center; margin: 32px 0;">
+    <a href="{{ url_dossier }}" class="btn">Corriger mon dossier</a>
+</p>
+<p>Cordialement,<br>L'équipe PGNOC-TI</p>
+{% endblock %}

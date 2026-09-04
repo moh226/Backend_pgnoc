@@ -171,3 +171,132 @@ def envoyer_email_inscription(user_pk):
         logger.info("Email d'inscription envoyé à %s.", user.email)
     except Exception:
         logger.exception("Échec envoi email inscription à %s", user.email)
+
+
+# ─────────────────────────────────────────────────────────────
+# Emails transactionnels — transitions de dossier
+# ─────────────────────────────────────────────────────────────
+
+
+def _envoyer_email(template, sujet, destinataires, contexte):
+    """Helper : rend un template HTML et envoie l'email."""
+    try:
+        html = render_to_string(template, contexte)
+        text = strip_tags(html)
+        send_mail(
+            subject=sujet,
+            message=text,
+            from_email=None,
+            recipient_list=destinataires,
+            html_message=html,
+            fail_silently=False,
+        )
+        logger.info("Email '%s' envoyé à %s", sujet, destinataires)
+    except Exception:
+        logger.exception("Échec envoi email '%s' à %s", sujet, destinataires)
+
+
+@shared_task(ignore_result=True, max_retries=3)
+def envoyer_email_dossier_soumis(dossier_pk):
+    """Email aux agents/admin SGI quand un dossier est soumis."""
+    from dossiers.models import Dossier
+
+    try:
+        dossier = Dossier.objects.select_related("utilisateur", "sgi").get(pk=dossier_pk)
+    except Dossier.DoesNotExist:
+        return
+
+    cibles = list(
+        Utilisateur.objects.filter(
+            sgi_id=dossier.sgi_id,
+            role__code__in=(Role.Code.AGENT_SGI, Role.Code.ADMIN_SGI),
+            is_active=True,
+        ).values_list("email", flat=True)
+    )
+    if not cibles:
+        return
+
+    _envoyer_email(
+        "emails/dossier_soumis.html",
+        f"Nouveau dossier soumis — {dossier.reference}",
+        cibles,
+        {
+            "reference": dossier.reference,
+            "investisseur_email": dossier.utilisateur.email,
+            "sgi_nom": dossier.sgi.nom,
+            "date_soumission": dossier.date_soumission.strftime("%d/%m/%Y %H:%M") if dossier.date_soumission else "",
+        },
+    )
+
+
+@shared_task(ignore_result=True, max_retries=3)
+def envoyer_email_dossier_valide(dossier_pk):
+    """Email à l'investisseur quand son dossier est validé."""
+    from dossiers.models import Dossier
+
+    try:
+        dossier = Dossier.objects.select_related("utilisateur", "sgi").get(pk=dossier_pk)
+    except Dossier.DoesNotExist:
+        return
+
+    _envoyer_email(
+        "emails/dossier_valide.html",
+        f"Dossier validé — {dossier.reference}",
+        [dossier.utilisateur.email],
+        {
+            "prenom": dossier.utilisateur.prenom,
+            "email": dossier.utilisateur.email,
+            "reference": dossier.reference,
+            "sgi_nom": dossier.sgi.nom,
+        },
+    )
+
+
+@shared_task(ignore_result=True, max_retries=3)
+def envoyer_email_dossier_rejete(dossier_pk):
+    """Email à l'investisseur quand son dossier est rejeté."""
+    from dossiers.models import Dossier
+
+    try:
+        dossier = Dossier.objects.select_related("utilisateur", "sgi").get(pk=dossier_pk)
+    except Dossier.DoesNotExist:
+        return
+
+    _envoyer_email(
+        "emails/dossier_rejete.html",
+        f"Dossier rejeté — {dossier.reference}",
+        [dossier.utilisateur.email],
+        {
+            "prenom": dossier.utilisateur.prenom,
+            "email": dossier.utilisateur.email,
+            "reference": dossier.reference,
+            "sgi_nom": dossier.sgi.nom,
+            "motif_rejet": dossier.motif_rejet or "",
+        },
+    )
+
+
+@shared_task(ignore_result=True, max_retries=3)
+def envoyer_email_demande_correction(dossier_pk, valeur_pk):
+    """Email à l'investisseur quand un agent demande une correction."""
+    from dossiers.models import Dossier, ValeurChamp
+
+    try:
+        dossier = Dossier.objects.select_related("utilisateur", "sgi").get(pk=dossier_pk)
+        valeur = ValeurChamp.objects.select_related("champ").get(pk=valeur_pk)
+    except (Dossier.DoesNotExist, ValeurChamp.DoesNotExist):
+        return
+
+    _envoyer_email(
+        "emails/demande_correction.html",
+        f"Correction demandée — {dossier.reference}",
+        [dossier.utilisateur.email],
+        {
+            "prenom": dossier.utilisateur.prenom,
+            "email": dossier.utilisateur.email,
+            "reference": dossier.reference,
+            "sgi_nom": dossier.sgi.nom,
+            "champ_nom": valeur.champ.nom,
+            "motif": valeur.commentaire_agent or "",
+        },
+    )

@@ -6,7 +6,8 @@ from dossiers.views import (
     DossierAccepterConventionAPIView, DossierDetailAPIView,
     DossierGenererOtpAPIView, DossierListCreateAPIView,
     DossierSignerAPIView, DossierSoumettreAPIView,
-    EtapeKYCListAPIView, ValeurChampListCreateAPIView,
+    EtapeKYCListAPIView, InvestisseurDashboardAPIView,
+    ValeurChampListCreateAPIView,
     ValeurChampFichierUploadAPIView, ValeurChampFichierUrlAPIView,
     ValeurSelfieAuthenticiteAPIView,
 )
@@ -22,6 +23,11 @@ from dossiers.views_kyc_admin import (
 app_name = "dossiers"
 
 urlpatterns = [
+    path("investisseur/dashboard/",
+         InvestisseurDashboardAPIView.as_view(),
+         name="investisseur-dashboard",
+         ),
+
     path("etapes-kyc/",
          EtapeKYCListAPIView.as_view(),
          name="etapes-kyc"

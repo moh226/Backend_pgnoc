@@ -1,0 +1,15 @@
+{% extends "emails/base.html" %}
+{% block titre %}Correction demandée{% endblock %}
+{% block contenu %}
+<p>Bonjour <strong>{{ prenom|default:email }}</strong>,</p>
+<p>Un agent de la SGI <strong>{{ sgi_nom }}</strong> a demandé une correction sur votre dossier <strong>{{ reference }}</strong>.</p>
+<table style="width: 100%; border-collapse: collapse; margin: 16px 0;">
+    <tr><td style="padding: 8px; font-weight: bold;">Champ</td><td style="padding: 8px;">{{ champ_nom }}</td></tr>
+    <tr><td style="padding: 8px; font-weight: bold;">Motif</td><td style="padding: 8px;">{{ motif }}</td></tr>
+</table>
+<p>Veuillez corriger ce champ puis resoumettre votre dossier.</p>
+<p style="text-align: center; margin: 32px 0;">
+    <a href="{{ url_dossier }}" class="btn">Corriger</a>
+</p>
+<p>Cordialement,<br>L'équipe PGNOC-TI</p>
+{% endblock %}

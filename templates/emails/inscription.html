@@ -1,0 +1,11 @@
+{% extends "emails/base.html" %}
+{% block titre %}Bienvenue sur PGNOC-TI{% endblock %}
+{% block contenu %}
+<p>Bonjour <strong>{{ prenom|default:email }}</strong>,</p>
+<p>Votre compte a été créé avec succès sur la plateforme <strong>PGNOC-TI</strong>.</p>
+<p>Vous pouvez désormais vous connecter et constituer votre dossier KYC pour l'ouverture de votre compte-titres.</p>
+<p style="text-align: center; margin: 32px 0;">
+    <a href="{{ url_connexion }}" class="btn">Se connecter</a>
+</p>
+<p>Cordialement,<br>L'équipe PGNOC-TI</p>
+{% endblock %}

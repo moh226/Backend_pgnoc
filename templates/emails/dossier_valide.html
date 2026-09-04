@@ -1,0 +1,8 @@
+{% extends "emails/base.html" %}
+{% block titre %}Dossier validé{% endblock %}
+{% block contenu %}
+<p>Bonjour <strong>{{ prenom|default:email }}</strong>,</p>
+<p>Félicitations ! Votre dossier <strong>{{ reference }}</strong> a été validé par la SGI <strong>{{ sgi_nom }}</strong>.</p>
+<p>Votre compte-titres sera ouvert dans les plus brefs délais. Vous recevrez une notification une fois l'opération terminée.</p>
+<p>Cordialement,<br>L'équipe PGNOC-TI</p>
+{% endblock %}

@@ -8,7 +8,7 @@ logger = logging.getLogger("pgnoc.dossiers")
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.files.storage import default_storage
-from django.db.models import Prefetch, Q
+from django.db.models import Count, Prefetch, Q
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from drf_spectacular.types import OpenApiTypes
@@ -653,3 +653,86 @@ class DossierSoumettreAPIView(DossierProprietaireMixin, generics.GenericAPIView)
             DossierDetailSerializer(dossier).data,
             status=status.HTTP_200_OK,
         )
+
+
+class InvestisseurDashboardAPIView(generics.GenericAPIView):
+    """Tableau de bord investisseur — vue agrégée de ses dossiers.
+
+    GET /api/dossiers/investisseur/dashboard/
+
+    Retourne :
+      - total_dossiers
+      - par_statut : {BROUILLON: N, SOUMIS: N, ...}
+      - progression_moyenne : pourcentage moyen
+      - dernieres_activites : 5 dernières actions sur mes dossiers
+    """
+
+    permission_classes = (permissions.IsAuthenticated, EstInvestisseur)
+    serializer_class = drf_serializers.Serializer
+
+    @extend_schema(responses={200: inline_serializer(
+        "DashboardInvestisseur",
+        {
+            "total_dossiers": drf_serializers.IntegerField(),
+            "par_statut": drf_serializers.DictField(
+                child=drf_serializers.IntegerField(),
+            ),
+            "progression_moyenne": drf_serializers.FloatField(),
+            "dernieres_activites": inline_serializer(
+                "ActiviteDossier",
+                {
+                    "reference": drf_serializers.CharField(),
+                    "sgi_nom": drf_serializers.CharField(),
+                    "statut": drf_serializers.CharField(),
+                    "date_action": drf_serializers.CharField(),
+                },
+                many=True,
+            ),
+        },
+    )})
+    def get(self, request):
+        dossiers = Dossier.objects.filter(
+            utilisateur=request.user,
+        ).select_related("sgi", "etape_courante")
+
+        total = dossiers.count()
+
+        par_statut = dict(
+            dossiers.values_list("statut")
+            .annotate(nb=Count("id"))
+            .values_list("statut", "nb")
+        )
+
+        progression_moyenne = 0.0
+        if total > 0:
+            progression_moyenne = round(
+                dossiers.aggregate(avg=Count("progression_pct"))["avg"] / total * 100
+                if total else 0,
+                1,
+            )
+            from django.db.models import Avg
+            progression_moyenne = round(
+                dossiers.aggregate(avg=Avg("progression_pct"))["avg"] or 0,
+                1,
+            )
+
+        dernieres_activites = [
+            {
+                "reference": d.reference,
+                "sgi_nom": d.sgi.nom if d.sgi else "",
+                "statut": d.statut,
+                "date_action": (
+                    d.date_decision or d.date_soumission or d.date_creation
+                ).isoformat(),
+            }
+            for d in dossiers.order_by(
+                "-date_decision", "-date_soumission", "-date_creation"
+            )[:5]
+        ]
+
+        return Response({
+            "total_dossiers": total,
+            "par_statut": par_statut,
+            "progression_moyenne": progression_moyenne,
+            "dernieres_activites": dernieres_activites,
+        })

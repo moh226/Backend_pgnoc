@@ -284,3 +284,92 @@ class PresentationAdminAPIView(generics.GenericAPIView):
             for position, element in enumerate(elements):
                 element.pop("ordre", None)
                 relation.create(ordre=position, **element)
+
+
+class AdminSGIDashboardAPIView(generics.GenericAPIView):
+    """Tableau de bord Admin SGI — stats de MA SGI.
+
+    GET /api/sgi/admin/dashboard/
+
+    Retourne :
+      - agents : total, actifs
+      - dossiers : total, par_statut, soumis_aujourd_hui
+      - convention_publiee : bool
+      - presentation_renseignee : bool
+    """
+
+    permission_classes = (permissions.IsAuthenticated, EstAdminSGI)
+    serializer_class = serializers.Serializer
+
+    @extend_schema(responses={200: inline_serializer(
+        "DashboardAdminSGI",
+        {
+            "agents": inline_serializer(
+                "ResumeAgentsSGI",
+                {
+                    "total": serializers.IntegerField(),
+                    "actifs": serializers.IntegerField(),
+                },
+            ),
+            "dossiers": inline_serializer(
+                "ResumeDossiersSGI",
+                {
+                    "total": serializers.IntegerField(),
+                    "soumis_aujourd_hui": serializers.IntegerField(),
+                    "par_statut": serializers.DictField(
+                        child=serializers.IntegerField(),
+                    ),
+                },
+            ),
+            "convention_publiee": serializers.BooleanField(),
+            "presentation_renseignee": serializers.BooleanField(),
+        },
+    )})
+    def get(self, request):
+        from comptes.models import Role, Utilisateur
+        from django.db.models import Count
+        from django.utils import timezone
+        from dossiers.models import Dossier
+
+        sgi_id = request.user.sgi_id
+        aujourd_hui = timezone.localdate()
+
+        agents = Utilisateur.objects.filter(
+            role__code=Role.Code.AGENT_SGI,
+            sgi_id=sgi_id,
+        )
+        agents_total = agents.count()
+        agents_actifs = agents.filter(is_active=True).count()
+
+        dossiers = Dossier.objects.filter(sgi_id=sgi_id)
+        dossiers_total = dossiers.count()
+        dossiers_soumis_aujourd_hui = dossiers.filter(
+            date_soumission__date=aujourd_hui,
+        ).count()
+        par_statut = dict(
+            dossiers.values_list("statut")
+            .annotate(nb=Count("id"))
+            .values_list("statut", "nb")
+        )
+
+        convention_publiee = False
+        if hasattr(request.user.sgi, "convention"):
+            convention_publiee = request.user.sgi.convention.est_publiee()
+
+        presentation_renseignee = False
+        if hasattr(request.user.sgi, "presentation"):
+            presentation_renseignee = request.user.sgi.presentation.est_renseignee()
+
+        return Response({
+            "agents": {
+                "total": agents_total,
+                "actifs": agents_actifs,
+            },
+            "dossiers": {
+                "total": dossiers_total,
+                "soumis_aujourd_hui": dossiers_soumis_aujourd_hui,
+                "par_statut": par_statut,
+            },
+            "convention_publiee": convention_publiee,
+            "presentation_renseignee": presentation_renseignee,
+        })

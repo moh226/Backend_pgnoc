@@ -26,7 +26,10 @@ from dossiers.models import Dossier, ValeurChamp
 from dossiers.permissions import PeutAccederAuDossier
 from dossiers.serializers import DossierDetailSerializer
 from dossiers.workflow import transiter
-from notifications.tasks import notifier_commentaire_agent_task
+from notifications.tasks import (
+    notifier_commentaire_agent_task,
+    envoyer_email_demande_correction,
+)
 
 
 def _recuperer_dossier_autorise(request, view, dossier_pk):
@@ -141,6 +144,11 @@ class ValeurChampCommenterAPIView(generics.GenericAPIView):
             notifier_commentaire_agent_task.delay(str(dossier.pk), str(valeur.pk))
         except Exception:
             logger.warning("Notification commentaire non dispatchée (Redis ?)", exc_info=True)
+
+        try:
+            envoyer_email_demande_correction.delay(str(dossier.pk), str(valeur.pk))
+        except Exception:
+            logger.warning("Email correction non dispatché (Redis ?)", exc_info=True)
 
         return Response(
             {"id": valeur.id, "commentaire_agent": valeur.commentaire_agent},
