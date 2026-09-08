@@ -101,7 +101,11 @@ class UtilisateurPublicSerializer(serializers.ModelSerializer):
 
     Utilisé en réponse après inscription — ne contient jamais le
     mot de passe (même haché), ni de champs internes sensibles.
+    `role` expose le CODE lisible ("INVESTISSEUR"…), pas l'UUID de la
+    FK : le frontend typé `RoleCode` s'appuie dessus.
     """
+
+    role = serializers.CharField(source="role.code", read_only=True)
 
     class Meta:
         model = Utilisateur
