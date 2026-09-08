@@ -110,7 +110,8 @@ class DossierDetailSerializer(serializers.ModelSerializer):
         fields = (
             "id", "reference", "investisseur_email", "sgi", "etape_courante",
             "agent", "agent_email", "statut", "version", "progression_pct",
-            "motif_rejet", "convention_acceptee", "type_signature", "date_signature",
+            "motif_rejet", "convention_acceptee", "convention_version",
+            "type_signature", "date_signature",
             "date_creation",
             "date_soumission", "date_instruction", "date_decision", "valeurs_champs",
         )
@@ -212,6 +213,15 @@ class TeleversementFichierSerializer(serializers.Serializer):
         if champ.etape.sgi_id != dossier.sgi_id:
             raise serializers.ValidationError(
                 {"champ": "Ce champ n'appartient pas à la SGI de ce dossier."}
+            )
+
+        # Le champ (et son étape) doivent être actifs dans le parcours
+        # KYC courant : une SGI qui retire un champ doit voir les
+        # téléversements dessus refusés, comme c'est déjà le cas pour
+        # les valeurs textuelles (ValeurChampSerializer.validate_champ).
+        if not champ.actif or not champ.etape.actif:
+            raise serializers.ValidationError(
+                {"champ": "Ce champ n'est plus actif dans le parcours KYC."}
             )
 
         extension = fichier.name.rsplit(".", 1)[-1].lower() if "." in fichier.name else ""

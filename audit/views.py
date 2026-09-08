@@ -28,7 +28,26 @@ from rest_framework import serializers as drf_serializers
 
 from audit.models import JournalAudit
 from audit.serializers import JournalAuditSerializer
+from audit.services import journaliser
 from comptes.permissions import EstAdminGeneral
+
+
+def _tracer_export(request, format_export, params):
+    """Trace un export du journal (donnée réglementaire sensible)."""
+    journaliser(
+        request.user,
+        JournalAudit.Action.EXPORT_JOURNAL,
+        "JournalAudit",
+        f"{format_export}-{date.today().isoformat()}",
+        apres={
+            "format": format_export,
+            "filtres": {
+                cle: valeur for cle, valeur in params.items()
+                if cle in ("action", "email", "date_debut", "date_fin")
+            },
+        },
+        requete=request,
+    )
 
 
 def _filtrer_journal(params):
@@ -115,6 +134,9 @@ class JournalAuditExportAPIView(generics.GenericAPIView):
 
     @extend_schema(parameters=_PARAMETRES_JOURNAL, responses={(200, "text/csv"): OpenApiTypes.STR})
     def get(self, request):
+        # L'export du journal est lui-même une donnée sensible (exfiltration
+        # potentielle de toute la piste réglementaire) : l'accès est tracé.
+        _tracer_export(request, "CSV", request.query_params)
         entrees = _filtrer_journal(request.query_params).iterator()
 
         def lignes_csv():
@@ -163,7 +185,11 @@ class JournalAuditExportPDFAPIView(generics.GenericAPIView):
         description="Export PDF du journal d'audit pour les contrôles réglementaires CREPMF.",
     )
     def get(self, request):
-        entrees = list(_filtrer_journal(request.query_params)[:500])
+        # L'export du journal est lui-même une donnée sensible : traçage.
+        _tracer_export(request, "PDF", request.query_params)
+        LIMITE_PDF = 500
+        total_filtre = _filtrer_journal(request.query_params).count()
+        entrees = list(_filtrer_journal(request.query_params)[:LIMITE_PDF])
 
         response = HttpResponse(content_type="application/pdf")
         response["Content-Disposition"] = (
@@ -227,7 +253,12 @@ class JournalAuditExportPDFAPIView(generics.GenericAPIView):
 
             elements.append(Spacer(1, 5 * mm))
             elements.append(Paragraph(
-                f"{len(entrees)} entrée(s) — export généré le {date.today().strftime('%d/%m/%Y')}",
+                f"{len(entrees)} entrée(s) sur {total_filtre} — export généré le "
+                f"{date.today().strftime('%d/%m/%Y')}"
+                + (
+                    f" (tronqué à {LIMITE_PDF} : utilisez l'export CSV pour "
+                    "l'intégralité)" if total_filtre > LIMITE_PDF else ""
+                ),
                 styles["Normal"],
             ))
 

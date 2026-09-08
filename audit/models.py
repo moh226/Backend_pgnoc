@@ -55,6 +55,11 @@ class JournalAudit(models.Model):
         MODIFICATION_PROFIL = "MODIFICATION_PROFIL", _("Modification du profil personnel")
         CHANGEMENT_MOT_DE_PASSE = "CHANGEMENT_MOT_DE_PASSE", _("Changement de mot de passe")
         MODIFICATION_ACCUEIL = "MODIFICATION_ACCUEIL", _("Modification de la page d'accueil")
+        CONNEXION_OAUTH = "CONNEXION_OAUTH", _("Connexion via Google OAuth")
+        CONSULTATION_DOSSIER = "CONSULTATION_DOSSIER", _("Consultation d'un dossier KYC")
+        GENERATION_URL_FICHIER = "GENERATION_URL_FICHIER", _("Génération d'une URL de justificatif")
+        EXPORT_JOURNAL = "EXPORT_JOURNAL", _("Export du journal d'audit")
+        TRANSFERT_DOSSIER = "TRANSFERT_DOSSIER", _("Transfert de dossier à un agent")
 
     id = models.UUIDField(
         primary_key=True, default=uuid.uuid4, editable=False,

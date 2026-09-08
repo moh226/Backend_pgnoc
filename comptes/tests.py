@@ -398,6 +398,59 @@ class GoogleOAuthAPITests(APITestCase):
         privilegie.refresh_from_db()
         self.assertEqual(privilegie.role.code, Role.Code.AGENT_SGI)
 
+    @mock.patch(
+        "comptes.oauth.requests.get",
+        return_value=_FakeReponse({**IDENTITE_GOOGLE, "email_verified": True}),
+    )
+    @mock.patch(
+        "comptes.oauth.requests.post",
+        return_value=_FakeReponse({"access_token": "fake-access", "id_token": "x"}),
+    )
+    def test_callback_refuse_un_compte_desactive(self, mock_post, mock_get):
+        """Un compte suspendu ne reçoit jamais de tokens, même via Google."""
+        utilisateur = Utilisateur.objects.create_user("google@example.com", "S3curise!2026")
+        utilisateur.is_active = False
+        utilisateur.save(update_fields=["is_active"])
+
+        state = self._initialiser_etat()
+        reponse = self.client.get(self.url_callback, {"code": "auth-code", "state": state})
+
+        self.assertEqual(reponse.status_code, 302)
+        self.assertIn("error=compte_conflit", reponse["Location"])
+
+    @mock.patch("comptes.oauth.requests.get", return_value=_FakeReponse(IDENTITE_GOOGLE))
+    @mock.patch(
+        "comptes.oauth.requests.post",
+        return_value=_FakeReponse({"access_token": "fake-access", "id_token": "x"}),
+    )
+    def test_callback_reussi_journalise_la_connexion(self, mock_post, mock_get):
+        """La connexion OAuth laisse une trace au journal (§8.3 CREPMF)."""
+        from audit.models import JournalAudit
+
+        state = self._initialiser_etat()
+        self.client.get(self.url_callback, {"code": "auth-code", "state": state})
+
+        utilisateur = Utilisateur.objects.get(email="google@example.com")
+        self.assertTrue(
+            JournalAudit.objects.filter(
+                action=JournalAudit.Action.CONNEXION_OAUTH,
+                utilisateur=utilisateur,
+            ).exists()
+        )
+
+    def test_callback_state_invalide_journalise_l_echec(self):
+        """Un state forgé (login CSRF) est tracé sans imputabilité."""
+        from audit.models import JournalAudit
+
+        self.client.get(self.url_callback, {"code": "auth-code", "state": "bidon"})
+
+        self.assertTrue(
+            JournalAudit.objects.filter(
+                action=JournalAudit.Action.CONNEXION_OAUTH,
+                apres__erreur="etat_invalide",
+            ).exists()
+        )
+
 
 class AgentsAdminSGIAPITests(APITestCase):
     """UC18 : gestion des comptes Agent SGI par l'Admin SGI."""

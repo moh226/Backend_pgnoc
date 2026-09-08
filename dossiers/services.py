@@ -3,6 +3,7 @@
 import hashlib
 import hmac
 import json
+import logging
 import secrets
 from datetime import timedelta
 
@@ -18,8 +19,11 @@ from audit.models import JournalAudit
 from audit.services import journaliser
 from dossiers.models import ChampKYC, Dossier, EtapeKYC, ValeurChamp
 
+logger = logging.getLogger("pgnoc.dossiers")
+
 _DUREE_VALIDITE_OTP = timedelta(minutes=5)
 _ITERATIONS_PBKDF2 = 120_000
+_TENTATIVES_OTP_MAX = 5
 
 _TAILLE_MAX_SELFIE_SECOURS_MO = 5
 
@@ -127,10 +131,11 @@ def _est_rempli(champ, valeur):
 def generer_code_otp(dossier):
     """Génère un code OTP à 6 chiffres et l'enregistre hashé sur le dossier.
 
-    En production, le code serait acheminé par un canal hors-bande (SMS/
-    email) ; l'API le renvoie en clair pour le développement.
+    Le code est acheminé par email (tâche `envoyer_email_code_otp`,
+    canal hors-bande) ; l'API ne le renvoie en clair qu'en
+    développement (``DEBUG=True``).
 
-    Retourne le code en clair (l'appelant l'achemine / le renvoie).
+    Retourne le code en clair (uniquement pour l'acheminement DEBUG).
     """
     code = f"{secrets.randbelow(1_000_000):06d}"
     sel = secrets.token_hex(16)
@@ -138,7 +143,20 @@ def generer_code_otp(dossier):
     # re-vérifier le code sans stocker le code en clair.
     dossier.otp_hash = f"{sel}:{pbkdf2(code, sel, _ITERATIONS_PBKDF2, 32, hashlib.sha256).hex()}"
     dossier.otp_expiration = timezone.now() + _DUREE_VALIDITE_OTP
-    dossier.save(update_fields=["otp_hash", "otp_expiration"])
+    dossier.otp_tentatives = 0
+    dossier.save(update_fields=["otp_hash", "otp_expiration", "otp_tentatives"])
+
+    # Acheminement hors-bande (best-effort : un échec d'email ne bloque
+    # pas la génération, l'investisseur peut en demander un nouveau).
+    from notifications.tasks import envoyer_email_code_otp
+
+    try:
+        transaction.on_commit(
+            lambda: envoyer_email_code_otp.delay(str(dossier.pk), code)
+        )
+    except Exception:
+        logger.exception("Dispatch email OTP impossible (broker indisponible ?)")
+
     return code
 
 
@@ -197,7 +215,7 @@ def _poser_signature_sous_verrou(dossier, code_otp, requete):
 
     if timezone.now() > dossier.otp_expiration:
         _purger_otp(dossier)
-        dossier.save(update_fields=["otp_hash", "otp_expiration"])
+        dossier.save(update_fields=["otp_hash", "otp_expiration", "otp_tentatives"])
         raise ValidationError(
             _("Le code OTP a expiré : générez-en un nouveau avant de signer.")
         )
@@ -208,11 +226,23 @@ def _poser_signature_sous_verrou(dossier, code_otp, requete):
         hash_stocke,
         pbkdf2(code_otp, sel, _ITERATIONS_PBKDF2, 32, hashlib.sha256).hex(),
     ):
+        # Anti brute-force : au bout de N codes erronés sur un même OTP,
+        # il est purgé — il faut en générer un nouveau (throttle 10/min
+        # en amont, ~50 essais max par code, insuffisant seul).
+        dossier.otp_tentatives = (dossier.otp_tentatives or 0) + 1
+        if dossier.otp_tentatives >= _TENTATIVES_OTP_MAX:
+            _purger_otp(dossier)
+            dossier.save(update_fields=["otp_hash", "otp_expiration", "otp_tentatives"])
+            raise ValidationError(
+                _("Trop de codes erronés : générez un nouveau code OTP.")
+            )
+        dossier.save(update_fields=["otp_tentatives"])
         raise ValidationError(_("Code OTP invalide."))
 
     ip = _adresse_ip(requete)
     horodatage = timezone.now()
-    preuve = "sha256:" + hashlib.sha256(
+    empreinte = _empreinte_contenu(dossier)
+    preuve_hash = hashlib.sha256(
         "|".join([
             dossier.reference,
             str(dossier.utilisateur_id),
@@ -220,8 +250,17 @@ def _poser_signature_sous_verrou(dossier, code_otp, requete):
             horodatage.isoformat(),
             ip or "0.0.0.0",
             code_otp,
+            # Empreinte du CONTENU signé : la preuve couvre l'intégralité
+            # des valeurs du dossier au moment de la signature. Toute
+            # modification ultérieure d'une valeur rend la preuve
+            # incohérente avec le contenu (vérifiée à la validation).
+            empreinte,
         ]).encode("utf-8")
     ).hexdigest()
+    # L'empreinte du contenu est embarquée en clair dans la preuve : la
+    # validation peut la comparer au contenu réellement instruit sans
+    # connaître le code OTP (purgé).
+    preuve = f"sha256:{preuve_hash}|contenu:{empreinte}"
 
     dossier.type_signature = Dossier.TypeSignature.OTP
     dossier.donnee_signature = preuve
@@ -260,16 +299,43 @@ def _poser_signature_sous_verrou(dossier, code_otp, requete):
 def _purger_otp(dossier):
     dossier.otp_hash = ""
     dossier.otp_expiration = None
+    dossier.otp_tentatives = 0
+
+
+def empreinte_contenu(dossier):
+    """Empreinte SHA-256 publique de l'ensemble des valeurs du dossier.
+
+    Voir `_empreinte_contenu` : exposée sous ce nom pour le workflow
+    (validation de la preuve de signature au moment de la décision).
+    """
+    return _empreinte_contenu(dossier)
+
+
+def _empreinte_contenu(dossier):
+    """Empreinte SHA-256 de l'ensemble des valeurs du dossier.
+
+    Chaque ligne ``ValeurChamp`` contribue au hash trié par identifiant
+    de champ (ordre stable) : toute valeur saisie, remplacée ou supprimée
+    change l'empreinte, et donc la cohérence de la preuve de signature.
+    Les fichiers sont couverts par leur référence de stockage (le
+    contenu binaire est déjà couvert par `empreinte_sha256` du selfie).
+    """
+    lignes = (
+        ValeurChamp.objects.filter(dossier_id=dossier.pk)
+        .order_by("champ_id")
+        .values_list("champ_id", "valeur", "fichier")
+    )
+    payload = "\n".join(f"{c}|{v or ''}|{f or ''}" for c, v, f in lignes)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _adresse_ip(requete):
-    """Adresse IP du signataire (via proxy inverse si présent)."""
+    """Délègue au helper partagé (comportement anti-spoofing unique)."""
     if requete is None:
         return None
-    x_forwarded = requete.META.get("HTTP_X_FORWARDED_FOR")
-    if x_forwarded:
-        return x_forwarded.split(",")[0].strip()
-    return requete.META.get("REMOTE_ADDR")
+    from audit.services import adresse_ip_client
+
+    return adresse_ip_client(requete)
 
 
 # ---------------------------------------------------------------------------

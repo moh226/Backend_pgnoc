@@ -278,9 +278,12 @@ class JournalLectureAdminGeneralTests(APITestCase):
         lecteur = csv.reader(io.StringIO(b"".join(reponse.streaming_content).decode("utf-8")))
         lignes = list(lecteur)
         self.assertEqual(lignes[0][0], "date_action")
-        self.assertEqual(len(lignes), 3)  # en-tête + 2 traces
+        # en-tête + 2 traces + 1 trace d'export (l'export s'auto-trace)
+        self.assertEqual(len(lignes), 4)
         corps = lignes[1:]
-        self.assertEqual({l[1] for l in corps}, {"inv@example.com", "agent@example.com"})
+        emails = {l[1] for l in corps}
+        self.assertIn("inv@example.com", emails)
+        self.assertIn("agent@example.com", emails)
 
     def test_export_csv_respecte_les_filtres(self):
         self.client.force_authenticate(self.admin_general)

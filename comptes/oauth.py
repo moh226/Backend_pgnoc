@@ -48,6 +48,35 @@ _USERINFO_ENDPOINT = "https://openidconnect.googleapis.com/v1/userinfo"
 _TIMEOUT = 10  # secondes : ne jamais bloquer le serveur sur Google.
 
 
+def _tracer_echec_oauth(request, code_erreur, email=""):
+    """Journalise un échec OAuth (imputabilité minimale, sans secret).
+
+    Le journal d'audit est l'outil de détection d'abus exigé §8.3 : le
+    flux OAuth, seul point d'entrée non authentifié, doit y laisser une
+    trace au même titre que le login classique.
+    """
+    from audit.services import journaliser
+
+    journaliser(
+        None,
+        _action_oauth_echec(code_erreur),
+        "Utilisateur",
+        email or "inconnu",
+        apres={"erreur": code_erreur},
+        requete=request,
+    )
+
+
+def _action_oauth_echec(code_erreur):
+    from audit.models import JournalAudit
+
+    return (
+        JournalAudit.Action.INSCRIPTION
+        if code_erreur == "compte_conflit"
+        else JournalAudit.Action.CONNEXION_OAUTH
+    )
+
+
 def _rediriger_erreur(message):
     """Redirige vers le frontend avec un code d'erreur en query string.
 
@@ -115,6 +144,7 @@ class ConnexionGoogleCallbackView(APIView):
         state = request.query_params.get("state")
 
         if erreur:  # refus de l'utilisateur sur l'écran Google
+            _tracer_echec_oauth(request, "acces_refuse")
             return _rediriger_erreur("acces_refuse")
         if not code:
             return _rediriger_erreur("code_manquant")
@@ -122,17 +152,19 @@ class ConnexionGoogleCallbackView(APIView):
         # Anti falsification du flux : le state doit correspondre à celui
         # généré par /login/. Sinon c'est probablement une requête forgée.
         if state != request.session.pop("google_oauth_state", None):
+            _tracer_echec_oauth(request, "etat_invalide")
             return _rediriger_erreur("etat_invalide")
 
         identite = self._recuperer_identite_google(code)
         if identite is None:
             return _rediriger_erreur("identite_indisponible")
 
-        # Google ne garantit l'adresse que si l'email a été VERIFIÉ par
+        # Google ne garantit l'adresse que si l'email a été VERIFICÉ par
         # son propriétaire (`email_verified`). Refuser les emails non
         # vérifiés empêche la prise de contrôle d'un compte existant
         # via une adresse usurpée (issue de revue de code).
         if not identite.get("email_verified", False):
+            _tracer_echec_oauth(request, "email_non_verifie")
             return _rediriger_erreur("email_non_verifie")
 
         email = identite.get("email") or ""
@@ -142,10 +174,24 @@ class ConnexionGoogleCallbackView(APIView):
 
         utilisateur = _obtenir_ou_creer_investisseur_google(email, google_id, identite)
         if utilisateur is None:
+            _tracer_echec_oauth(request, "compte_conflit", email=email)
             return _rediriger_erreur("compte_conflit")
 
         jeton_access = UtilisateurTokenObtainPairSerializer.get_token(utilisateur)
         jeton_refresh = RefreshToken.for_user(utilisateur)
+
+        from audit.models import JournalAudit
+        from audit.services import journaliser
+
+        journaliser(
+            utilisateur,
+            JournalAudit.Action.CONNEXION_OAUTH,
+            "Utilisateur",
+            str(utilisateur.pk),
+            apres={"email": utilisateur.email, "creation": not utilisateur.has_usable_password()},
+            requete=request,
+        )
+
         url = urlsplit(settings.GOOGLE_OAUTH_FRONT_REDIRECT)
         base = urlunsplit((url.scheme, url.netloc, url.path, "", ""))
         fragment = f"access={jeton_access}&refresh={jeton_refresh}"
@@ -194,7 +240,10 @@ def _obtenir_ou_creer_investisseur_google(email, google_id, identite):
         de passe aléatoire inutilisable (le compte n'est accessible que
         via Google, pas par mot de passe) ;
       - email déjà lié à un AUTRE google_id → conflit, refus (sinon un
-        deuxième compte Google pourrait voler l'accès à ce compte).
+        deuxième compte Google pourrait voler l'accès à ce compte) ;
+      - compte désactivé (`is_active=False`) → refus : un compte
+        suspendu par la plateforme ne doit pas recevoir de tokens,
+        fût-ce apparemment (cohérence avec le login classique).
     """
     try:
         utilisateur = Utilisateur.objects.get(email__iexact=email)
@@ -218,10 +267,19 @@ def _obtenir_ou_creer_investisseur_google(email, google_id, identite):
                 )
                 return None
 
+    if not utilisateur.is_active:
+        logger.warning("Tentative OAuth Google sur un compte désactivé : email=%s", email)
+        return None
+
     if utilisateur.role.code != Role.Code.INVESTISSEUR:
         return None
 
-    profil = utilisateur.profil_investisseur
+    try:
+        profil = utilisateur.profil_investisseur
+    except Exception:
+        logger.warning("Profil investisseur manquant pour email=%s — refus OAuth.", email)
+        return None
+
     if profil.google_id and profil.google_id != google_id:
         return None
     if profil.google_id != google_id:

@@ -217,7 +217,8 @@ class SoumissionAPITests(APITestCase):
         self.dossier.refresh_from_db()
         self.assertEqual(self.dossier.type_signature, Dossier.TypeSignature.OTP)
         self.assertTrue(self.dossier.donnee_signature.startswith("sha256:"))
-        self.assertEqual(len(self.dossier.donnee_signature), 7 + 64)
+        # Format : sha256:<hash>|contenu:<empreinte du contenu signé>.
+        self.assertIn("|contenu:", self.dossier.donnee_signature)
         self.assertIsNotNone(self.dossier.date_signature)
         self.assertIsNotNone(self.dossier.ip_signature)
         # Le code est consommé (à usage unique).
@@ -520,7 +521,10 @@ class CircuitAgentAPITests(APITestCase):
         self.assertTrue(valeur_a.est_corrige)
         self.assertEqual(valeur_a.commentaire_agent, "À reformuler")
 
-        # Resoumission (1G) : le dossier repart en SOUMIS, version incrémentée.
+        # Resoumission (1G) : après rejet, la preuve de signature a été
+        # purgée (elle couvrait l'ancien contenu) — l'investisseur
+        # re-signe le contenu corrigé avant de resoumettre.
+        _signer_dossier(self.dossier)
         url_soumettre = self._url("dossiers:dossier-soumettre")
         self.client.force_authenticate(self.investisseur)
         rep = self.client.post(url_soumettre)
@@ -877,6 +881,9 @@ class MachineAEtatsTests(APITestCase):
         transiter(self.dossier, Dossier.Statut.SOUMIS)
         transiter(self.dossier, Dossier.Statut.EN_INSTRUCTION, agent=self.agent)
         transiter(self.dossier, Dossier.Statut.REJETE, agent=self.agent, motif_rejet="Justificatif abimé")
+        # Le rejet a purgé la signature : re-signature obligatoire avant
+        # la resoumission (la preuve doit couvrir le contenu corrigé).
+        _signer_dossier(self.dossier)
         transiter(self.dossier, Dossier.Statut.SOUMIS)
         self.dossier.refresh_from_db()
         self.assertEqual(self.dossier.statut, Dossier.Statut.SOUMIS)

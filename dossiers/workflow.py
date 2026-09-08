@@ -135,7 +135,9 @@ def _appliquer_transition(dossier,
             # Resoumission après rejet : nouvelle version, l'ancien agent
             # est libéré, l'historique de décision et le motif d'ancien
             # rejet sont remis à zéro (le dossier resoumis ne doit plus
-            # afficher l'ancien motif).
+            # afficher l'ancien motif). La signature, elle, a déjà été
+            # purgée AU REJET : l'investisseur a forcément re-signé le
+            # contenu corrigé avant d'arriver ici (précondition ci-dessus).
             dossier.version += 1
             dossier.agent = None
             dossier.date_instruction = None
@@ -153,6 +155,17 @@ def _appliquer_transition(dossier,
             raise ValidationError(
                 _("Un dossier ne peut être validé sans signature électronique complète.")
             )
+        # La preuve doit couvrir le contenu SOUMIS : on recalcule
+        # l'empreinte des valeurs actuelles et on la compare à celle
+        # scellée dans la preuve. Une valeur modifiée après signature
+        # (ou une preuve issue d'une version antérieure du dossier)
+        # invalide la décision.
+        from dossiers.services import empreinte_contenu
+        if empreinte_contenu(dossier) not in dossier.donnee_signature:
+            raise ValidationError(
+                _("La preuve de signature ne correspond plus au contenu du "
+                  "dossier : les données ont été modifiées après signature.")
+            )
         dossier.date_decision = timezone.now()
 
     elif nouveau_statut == Dossier.Statut.REJETE:
@@ -161,6 +174,15 @@ def _appliquer_transition(dossier,
             raise ValidationError(_("Le motif de rejet est obligatoire."))
         dossier.motif_rejet = motif_rejet.strip()
         dossier.date_decision = timezone.now()
+        # Le rejet invalide le contenu signé : la preuve couvrait les
+        # valeurs de la version soumise, que l'investisseur va corriger.
+        # On la purge immédiatement — la resoumission exigera une
+        # nouvelle signature du contenu corrigé (UC17), jamais la
+        # réutilisation de l'acceptation d'une version antérieure.
+        dossier.type_signature = ""
+        dossier.donnee_signature = ""
+        dossier.date_signature = None
+        dossier.ip_signature = None
 
     dossier.statut = nouveau_statut
     dossier.save(update_fields=champs_effectivement_modifies(dossier))
@@ -212,6 +234,7 @@ def champs_effectivement_modifies(dossier, base=None):
     candidats = [
         "statut", "version", "etape_courante", "agent", "progression_pct",
         "date_soumission", "date_instruction", "date_decision", "motif_rejet",
+        "type_signature", "donnee_signature", "date_signature", "ip_signature",
     ]
     if base is None:
         base = Dossier.objects.only(*candidats).get(pk=dossier.pk)
@@ -263,6 +286,16 @@ def _verifier_avant_soumission(dossier):
             raise ValidationError(
                 _("Vous devez accepter la convention tarifaire de la SGI "
                   "avant de soumettre votre dossier.")
+            )
+        # Version : l'acceptation doit porter sur le PDF ACTUEL de la
+        # SGI. Si la convention a été remplacée depuis l'acceptation
+        # (ou après un rejet), l'accord est caduc : l'investisseur doit
+        # relire et accepter la nouvelle version.
+        if dossier.convention_version != published.fichier_pdf.name:
+            raise ValidationError(
+                _("La convention tarifaire de la SGI a été mise à jour : "
+                  "vous devez relire et accepter la nouvelle version avant "
+                  "de soumettre votre dossier.")
             )
 
 

@@ -37,6 +37,12 @@ DEBUG = config("DJANGO_DEBUG", default=False, cast=bool)
 # Détecte si on est dans une exécution de tests (manage.py test).
 EXECUTION_TESTS = "test" in sys.argv
 
+# Phase de build d'image (collectstatic au Dockerfile) : les variables
+# d'environnement de production ne sont pas encore injectées. Ce drapeau
+# NE lève que le garde-fou MinIO : collectstatic ne touche qu'aux
+# fichiers statiques (whitenoise), jamais au stockage des justificatifs.
+PHASE_BUILD = config("DJANGO_COLLECTSTATIC_BUILD", default=False, cast=bool)
+
 ALLOWED_HOSTS = config("DJANGO_ALLOWED_HOSTS", default="", cast=Csv())
 
 # En développement (DEBUG=True), on tolère des ALLOWED_HOSTS vides en
@@ -103,6 +109,18 @@ if DEBUG and not CORS_ALLOWED_ORIGINS:
 # Autorise l'envoi des cookies / en-têtes d'authentification depuis le
 # frontend (nécessaire pour les requêtes authentifiées cross-origin).
 CORS_ALLOW_CREDENTIALS = True
+
+# URL publique du frontend : utilisée pour construire les liens dans les
+# emails transactionnels (connexion, correction de dossier…). En dev, le
+# serveur Vite local ; en production, l'origine publique de la SPA.
+FRONTEND_URL = config("FRONTEND_URL", default="http://localhost:5173").rstrip("/")
+
+# Nombre de proxies inverses de confiance devant l'application. Sert au
+# calcul de l'IP client depuis X-Forwarded-For (preuves légales de
+# signature, journal d'audit) : on remonte depuis la DROITE du header,
+# chaque saut correspondant à un proxy maîtrisé. 1 = un reverse proxy
+# (nginx/traefik) devant Django ; 0 = exposition directe.
+PROXIES_DE_CONFIANCE = config("PROXIES_DE_CONFIANCE", default=1, cast=int)
 
 
 # Application definition
@@ -228,7 +246,9 @@ AWS_QUERYSTRING_EXPIRE = 600  # URL valide 10 minutes seulement
 # Garde-fou : hors DEBUG, MinIO est requis pour les justificatifs.
 # En mode local (DEBUG=True), le FileSystemStorage sert les fichiers
 # via /media/ mais les URLs ne sont ni signées ni expirantes.
-if not EXECUTION_TESTS and not DEBUG and not MINIO_ENDPOINT_URL:
+# Exception : la phase de build Docker (collectstatic) n'a pas les
+# variables de prod et ne touche pas au stockage média.
+if not EXECUTION_TESTS and not PHASE_BUILD and not DEBUG and not MINIO_ENDPOINT_URL:
     raise RuntimeError(
         "MINIO_ENDPOINT_URL doit être renseigné en production. "
         "Les justificatifs KYC nécessitent un stockage S3 signé."
@@ -302,11 +322,6 @@ REST_FRAMEWORK = {
     # table d'un coup. Taille de page surchargeable par variable d'env.
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": config("DRF_PAGE_SIZE", default=25, cast=int),
-    "PAGE_SIZE_QUERY_PARAM": "page_size",
-    "MAX_PAGE_SIZE": 100,
-    # Le client peut demander une taille de page explicite (`?page_size=50`),
-    # bornée par PageNumberPagination (max 100). Sans paramètre, c'est
-    # `PAGE_SIZE` qui s'applique.
     "PAGE_SIZE_QUERY_PARAM": "page_size",
     "MAX_PAGE_SIZE": 100,
 

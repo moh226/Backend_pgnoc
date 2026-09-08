@@ -8,6 +8,8 @@ toute action sensible à venir.
 
 import logging
 
+from django.conf import settings
+
 from audit.models import JournalAudit
 
 logger = logging.getLogger("pgnoc.audit")
@@ -72,12 +74,30 @@ def journaliser(
 def _adresse_ip(requete):
     """Adresse IP réelle : respecte le proxy inverse (X-Forwarded-For).
 
-    Note : la valeur n'a de valeur probante que si le header est posé
-    par un proxy de confiance ; `SECURE_PROXY_SSL_HEADER` / le reverse
-    proxy doivent normaliser X-Forwarded-For en amont.
+    Anti-falsification : au lieu de prendre le PREMIER élément (contrôlé
+    par le client quand le proxy ajoute au header au lieu de le réécrire),
+    on prend l'élément en remontant depuis la droite d'autant de sauts
+    que de proxies de confiance (`PROXIES_DE_CONFIANCE`, défaut 1).
+    Le dernier élément est toujours posé par le proxy immédiat, que le
+    client ne contrôle pas. La valeur n'a de valeur probante que si ce
+    paramètre correspond à la topologie réelle du déploiement.
     """
     x_forwarded = requete.META.get("HTTP_X_FORWARDED_FOR")
     if x_forwarded:
-        # Le premier élément est l'adresse d'origine côté client.
-        return x_forwarded.split(",")[0].strip()
+        sauts = max(int(getattr(settings, "PROXIES_DE_CONFIANCE", 1)), 0)
+        elements = [e.strip() for e in x_forwarded.split(",") if e.strip()]
+        if elements:
+            # Avec N proxies de confiance, l'IP client est l'élément à
+            # N positions depuis la fin ; sans header, c'est REMOTE_ADDR.
+            return elements[-(sauts + 1)] if len(elements) > sauts else elements[0]
     return requete.META.get("REMOTE_ADDR")
+
+
+def adresse_ip_client(requete):
+    """Adresse IP du client pour les preuves légales (signature, audit).
+
+    Point d'accès unique partagé par tout le projet (l'ancienne
+    duplication dossiers.services._adresse_ip est supprimée) : le
+    comportement anti-spoofing est appliqué partout de la même façon.
+    """
+    return _adresse_ip(requete)

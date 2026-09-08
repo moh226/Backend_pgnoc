@@ -137,7 +137,12 @@ class ProgressionSansValeursFacticesTests(APITestCase):
 
 @override_settings(
     MEDIA_ROOT=MEDIA_TEMPORAIRE,
-    STORAGES={"default": {"BACKEND": "django.core.files.storage.FileSystemStorage"}},
+    STORAGES={
+        "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+        # WhiteNoise résout staticfiles_storage dès que STATIC_ROOT
+        # contient des fichiers : l'override reste un dict COMPLET.
+        "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"},
+    },
 )
 class UploadDurciTests(APITestCase):
     """Magic bytes vérifiés + plafond de secours + pas de clé MinIO exposée."""
@@ -196,7 +201,12 @@ class UploadDurciTests(APITestCase):
 
 @override_settings(
     MEDIA_ROOT=MEDIA_TEMPORAIRE,
-    STORAGES={"default": {"BACKEND": "django.core.files.storage.FileSystemStorage"}},
+    STORAGES={
+        "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+        # WhiteNoise résout staticfiles_storage dès que STATIC_ROOT
+        # contient des fichiers : l'override reste un dict COMPLET.
+        "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"},
+    },
 )
 class CycleRejetCorrectionTests(APITestCase):
     """Bugs : motif purgé à la resoumission, est_corrige honoré à l'upload."""
@@ -232,6 +242,8 @@ class CycleRejetCorrectionTests(APITestCase):
         )
         self.assertEqual(self.dossier.motif_rejet, "CNIB illisible")
 
+        # Le rejet purge la signature : re-signature avant resoumission.
+        _signer_dossier(self.dossier)
         transiter(self.dossier, Dossier.Statut.SOUMIS)
         self.dossier.refresh_from_db()
         self.assertEqual(self.dossier.motif_rejet, "")

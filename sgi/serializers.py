@@ -118,6 +118,10 @@ class SGIFicheSerializer(serializers.ModelSerializer):
             "titre": convention.titre,
             "signe_requis": bool(convention.fichier_pdf),
             "fichier_url": convention.fichier_pdf.url if convention.fichier_pdf else None,
+            # Identifiant de version (nom de stockage) : le dossier de
+            # l'investisseur fige la version acceptée ; si elle diffère,
+            # l'acceptation doit être renouvelée (workflow UC16).
+            "version": convention.fichier_pdf.name if convention.fichier_pdf else "",
         }
 
 

@@ -28,8 +28,8 @@ class BlocAccueil(models.Model):
         APPEL_ACTION = "APPEL_ACTION", _("Appel à l'action final")
 
     # Structure attendue de `contenu` (ValidationError du serializer) :
-    #   HERO         : {"cta_principal", "lien_principal",
-    #                  "cta_secondaire", "lien_secondaire"}
+#   HERO         : {"slogan", "cta_principal", "lien_principal",
+#                  "cta_secondaire", "lien_secondaire"}
     #   REASSURANCE  : {"mentions": ["…", …]}
     #   CHIFFRES     : {"chiffres": [{"valeur", "libelle"}, …]}
     #   ETAPES       : {"etapes": [{"titre", "description"}, …]}
@@ -85,7 +85,7 @@ class BlocAccueil(models.Model):
 # ---------------------------------------------------------------------------
 
 CLEFS_PAR_TYPE = {
-    BlocAccueil.TypeBloc.HERO: ("cta_principal", "lien_principal",
+    BlocAccueil.TypeBloc.HERO: ("slogan", "cta_principal", "lien_principal",
                                 "cta_secondaire", "lien_secondaire"),
     BlocAccueil.TypeBloc.APPEL_ACTION: ("cta", "lien", "slogan"),
 }

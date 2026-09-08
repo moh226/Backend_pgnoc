@@ -361,6 +361,19 @@ class Dossier(models.Model):
             "convention tarifaire (UC16)."
         ),
     )
+    convention_version = models.CharField(
+        _("Version de la convention acceptée"),
+        max_length=300,
+        blank=True,
+        editable=False,
+        help_text=_(
+            "Empreinte (nom de stockage) du PDF de convention au moment de "
+            "l'acceptation. Si la SGI publie une nouvelle convention, cette "
+            "empreinte ne correspond plus à la version courante et "
+            "l'acceptation doit être renouvelée : l'investisseur ne peut "
+            "être engagé que par un document qu'il a réellement vu."
+        ),
+    )
 
     # --- Signature électronique ---
     type_signature = models.CharField(
@@ -393,6 +406,15 @@ class Dossier(models.Model):
     otp_expiration = models.DateTimeField(
         _("Expiration du code OTP"),
         null=True, blank=True,
+    )
+    otp_tentatives = models.PositiveSmallIntegerField(
+        _("Tentatives OTP erronées"),
+        default=0,
+        editable=False,
+        help_text=_(
+            "Compteur de codes erronés depuis la dernière génération ; "
+            "au-delà du plafond, l'OTP est purgé (anti brute-force)."
+        ),
     )
     ip_signature = models.GenericIPAddressField(
         _("Adresse IP de signature"),

@@ -284,47 +284,59 @@ class DossierTransfererAPIView(generics.GenericAPIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        ancien_agent_id = dossier.agent_id
-        ancien_statut = dossier.statut
+        from django.db import transaction
 
-        dossier.agent = agent_cible
-        update_fields = ["agent"]
+        try:
+            with transaction.atomic():
+                # Relecture sous verrou : sérialise le transfert avec toute
+                # décision concurrente (valider/rejeter/prise en charge) —
+                # même convention que le reste du workflow.
+                dossier = type(dossier).objects.select_for_update().get(pk=dossier.pk)
 
-        if dossier.statut == Dossier.Statut.SOUMIS:
-            from dossiers.workflow import transiter
-            try:
-                transiter(
-                    dossier,
-                    Dossier.Statut.EN_INSTRUCTION,
-                    agent=agent_cible,
-                    utilisateur=request.user,
+                if dossier.statut not in (Dossier.Statut.SOUMIS, Dossier.Statut.EN_INSTRUCTION):
+                    return Response(
+                        {"detail": "Le statut du dossier a changé pendant le transfert."},
+                        status=status.HTTP_409_CONFLICT,
+                    )
+
+                ancien_agent_id = dossier.agent_id
+                ancien_statut = dossier.statut
+
+                if dossier.statut == Dossier.Statut.SOUMIS:
+                    # SOUMIS → EN_INSTRUCTION par l'agent cible : on passe
+                    # par la machine à états (transiter journalise déjà la
+                    # transition — pas de double journalisation).
+                    transiter(
+                        dossier,
+                        Dossier.Statut.EN_INSTRUCTION,
+                        agent=agent_cible,
+                        utilisateur=request.user,
+                        requete=request,
+                    )
+                else:
+                    dossier.agent = agent_cible
+                    dossier.save(update_fields=["agent"])
+
+                journaliser(
+                    request.user,
+                    JournalAudit.Action.TRANSFERT_DOSSIER,
+                    "Dossier",
+                    str(dossier.pk),
+                    avant={
+                        "agent_id": str(ancien_agent_id) if ancien_agent_id else None,
+                        "statut": ancien_statut,
+                    },
+                    apres={
+                        "agent_id": str(agent_cible.pk),
+                        "statut": dossier.statut,
+                    },
                     requete=request,
                 )
-                update_fields = []
-            except ValidationError as exc:
-                return Response(
-                    {"detail": str(exc.message)},
-                    status=status.HTTP_409_CONFLICT,
-                )
-
-        if update_fields:
-            dossier.save(update_fields=update_fields)
-
-        journaliser(
-            request.user,
-            JournalAudit.Action.TRANSITION_DOSSIER,
-            "Dossier",
-            str(dossier.pk),
-            avant={
-                "agent_id": str(ancien_agent_id) if ancien_agent_id else None,
-                "statut": ancien_statut,
-            },
-            apres={
-                "agent_id": str(agent_cible.pk),
-                "statut": dossier.statut,
-            },
-            requete=request,
-        )
+        except ValidationError as exc:
+            return Response(
+                {"detail": "; ".join(exc.messages)},
+                status=status.HTTP_409_CONFLICT,
+            )
 
         dossier.refresh_from_db()
         return Response(self.get_serializer(dossier).data, status=status.HTTP_200_OK)

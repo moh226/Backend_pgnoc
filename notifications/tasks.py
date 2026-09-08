@@ -8,9 +8,11 @@ elles s'exécutent dans le processus Django sans broker.
 import logging
 
 from celery import shared_task
+from django.conf import settings
 from django.core.mail import send_mail
 from django.db import transaction
 from django.template.loader import render_to_string
+from django.utils import timezone
 from django.utils.html import strip_tags
 
 from comptes.models import Role, Utilisateur
@@ -19,7 +21,7 @@ from notifications.models import Notification
 logger = logging.getLogger("pgnoc.notifications")
 
 
-@shared_task(ignore_result=True, max_retries=3)
+@shared_task(ignore_result=True)
 def notifier_transition_task(dossier_pk, nouveau_statut):
     """Crée les notifications liées à une transition de statut (best-effort).
 
@@ -96,7 +98,7 @@ def _creer_notifications_transition(dossier, nouveau_statut):
             Notification.objects.bulk_create(notifications)
 
 
-@shared_task(ignore_result=True, max_retries=3)
+@shared_task(ignore_result=True)
 def notifier_commentaire_agent_task(dossier_pk, valeur_pk):
     """Notifie l'investisseur d'une demande de correction (UC09) — asynchrone."""
     from dossiers.models import Dossier, ValeurChamp
@@ -131,13 +133,18 @@ def notifier_commentaire_agent_task(dossier_pk, valeur_pk):
 # ─────────────────────────────────────────────────────────────
 
 
-@shared_task(ignore_result=True, max_retries=3)
+@shared_task(ignore_result=True, autoretry_for=(Exception,), retry_backoff=60, max_retries=3)
 def envoyer_email_inscription(user_pk):
     """Envoie un email de confirmation d'inscription (UC02, §4.2).
 
     L'email est envoyé en arrière-plan via Celery/Redis pour ne pas
     bloquer la requête d'inscription.  En mode eager (tests), la tâche
     s'exécute dans le processus Django sans broker.
+
+    Le HTML passe obligatoirement par le template ``emails/inscription.html``
+    (auto-échappé par Django) : le prénom étant une donnée saisie par
+    l'utilisateur, il ne doit jamais être interpolé directement dans le
+    HTML (risque d'injection de scripts/liens dans la boîte mail).
     """
     try:
         user = Utilisateur.objects.get(pk=user_pk)
@@ -145,32 +152,17 @@ def envoyer_email_inscription(user_pk):
         logger.warning("Utilisateur %s introuvable — email inscription ignoré.", user_pk)
         return
 
-    subject = "Bienvenue sur PGNOC-TI — Confirmation de votre compte"
-    message = (
-        f"Bonjour {user.prenom or user.email},\n\n"
-        f"Votre compte a été créé avec succès sur la plateforme PGNOC-TI.\n"
-        f"Vous pouvez désormais vous connecter et constituer votre dossier KYC.\n\n"
-        f"Cordialement,\nL'équipe PGNOC-TI"
+    _envoyer_email(
+        "emails/inscription.html",
+        "Bienvenue sur PGNOC-TI — Confirmation de votre compte",
+        [user.email],
+        {
+            "prenom": user.prenom,
+            "email": user.email,
+            "url_connexion": f"{settings.FRONTEND_URL}/login",
+            "annee": timezone.now().year,
+        },
     )
-    html_message = (
-        f"<p>Bonjour <strong>{user.prenom or user.email}</strong>,</p>"
-        f"<p>Votre compte a été créé avec succès sur la plateforme <strong>PGNOC-TI</strong>.</p>"
-        f"<p>Vous pouvez désormais vous connecter et constituer votre dossier KYC.</p>"
-        f"<p>Cordialement,<br>L'équipe PGNOC-TI</p>"
-    )
-
-    try:
-        send_mail(
-            subject=subject,
-            message=message,
-            from_email=None,
-            recipient_list=[user.email],
-            html_message=html_message,
-            fail_silently=False,
-        )
-        logger.info("Email d'inscription envoyé à %s.", user.email)
-    except Exception:
-        logger.exception("Échec envoi email inscription à %s", user.email)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -179,24 +171,31 @@ def envoyer_email_inscription(user_pk):
 
 
 def _envoyer_email(template, sujet, destinataires, contexte):
-    """Helper : rend un template HTML et envoie l'email."""
-    try:
-        html = render_to_string(template, contexte)
-        text = strip_tags(html)
-        send_mail(
-            subject=sujet,
-            message=text,
-            from_email=None,
-            recipient_list=destinataires,
-            html_message=html,
-            fail_silently=False,
-        )
-        logger.info("Email '%s' envoyé à %s", sujet, destinataires)
-    except Exception:
-        logger.exception("Échec envoi email '%s' à %s", sujet, destinataires)
+    """Helper : rend un template HTML et envoie l'email.
+
+    `annee` (copyright du socle `base.html`) est injecté automatiquement
+    — toute omission produisait un pied de page « ©  PGNOC-TI ».
+
+    Ne capture PAS les exceptions : les tâches appelantes sont
+    auto-retry (3 tentatives, backoff 60 s via `autoretry_for`) — le
+    `max_retries` jusqu'ici décoratif devient effectif, et l'échec
+    final est rapporté par le worker Celery.
+    """
+    contexte_complet = {"annee": timezone.now().year, **contexte}
+    html = render_to_string(template, contexte_complet)
+    text = strip_tags(html)
+    send_mail(
+        subject=sujet,
+        message=text,
+        from_email=None,
+        recipient_list=destinataires,
+        html_message=html,
+        fail_silently=False,
+    )
+    logger.info("Email '%s' envoyé à %d destinataire(s).", sujet, len(destinataires))
 
 
-@shared_task(ignore_result=True, max_retries=3)
+@shared_task(ignore_result=True, autoretry_for=(Exception,), retry_backoff=60, max_retries=3)
 def envoyer_email_dossier_soumis(dossier_pk):
     """Email aux agents/admin SGI quand un dossier est soumis."""
     from dossiers.models import Dossier
@@ -229,7 +228,7 @@ def envoyer_email_dossier_soumis(dossier_pk):
     )
 
 
-@shared_task(ignore_result=True, max_retries=3)
+@shared_task(ignore_result=True, autoretry_for=(Exception,), retry_backoff=60, max_retries=3)
 def envoyer_email_dossier_valide(dossier_pk):
     """Email à l'investisseur quand son dossier est validé."""
     from dossiers.models import Dossier
@@ -252,7 +251,7 @@ def envoyer_email_dossier_valide(dossier_pk):
     )
 
 
-@shared_task(ignore_result=True, max_retries=3)
+@shared_task(ignore_result=True, autoretry_for=(Exception,), retry_backoff=60, max_retries=3)
 def envoyer_email_dossier_rejete(dossier_pk):
     """Email à l'investisseur quand son dossier est rejeté."""
     from dossiers.models import Dossier
@@ -272,11 +271,12 @@ def envoyer_email_dossier_rejete(dossier_pk):
             "reference": dossier.reference,
             "sgi_nom": dossier.sgi.nom,
             "motif_rejet": dossier.motif_rejet or "",
+            "url_dossier": f"{settings.FRONTEND_URL}/espace-investisseur/dossiers/{dossier.pk}",
         },
     )
 
 
-@shared_task(ignore_result=True, max_retries=3)
+@shared_task(ignore_result=True, autoretry_for=(Exception,), retry_backoff=60, max_retries=3)
 def envoyer_email_demande_correction(dossier_pk, valeur_pk):
     """Email à l'investisseur quand un agent demande une correction."""
     from dossiers.models import Dossier, ValeurChamp
@@ -298,5 +298,42 @@ def envoyer_email_demande_correction(dossier_pk, valeur_pk):
             "sgi_nom": dossier.sgi.nom,
             "champ_nom": valeur.champ.nom,
             "motif": valeur.commentaire_agent or "",
+            "url_dossier": f"{settings.FRONTEND_URL}/espace-investisseur/dossiers/{dossier.pk}",
+        },
+    )
+
+
+@shared_task(ignore_result=True, autoretry_for=(Exception,), retry_backoff=60, max_retries=3)
+def envoyer_email_code_otp(dossier_pk, code):
+    """Achemine le code OTP de signature par email (canal hors-bande).
+
+    UC17 : en production, le code n'est JAMAIS renvoyé dans la réponse
+    API — c'est cet email qui l'achemine à l'investisseur. Le code est
+    envoyé une seule fois ; les re-dispatches Celery sont tolérés (le
+    hash OTP a pu être purgé entre-temps, l'email est alors ignoré).
+    """
+    from dossiers.models import Dossier
+
+    try:
+        dossier = Dossier.objects.select_related("utilisateur").get(pk=dossier_pk)
+    except Dossier.DoesNotExist:
+        return
+
+    # Ne pas expédier un code déjà purgé/expiré (re-dispatch tardif).
+    if not dossier.otp_expiration or timezone.now() > dossier.otp_expiration:
+        logger.warning("OTP du dossier %s expiré avant envoi — email ignoré.", dossier_pk)
+        return
+
+    _envoyer_email(
+        "emails/code_otp.html",
+        f"Votre code de signature — {dossier.reference}",
+        [dossier.utilisateur.email],
+        {
+            "prenom": dossier.utilisateur.prenom,
+            "email": dossier.utilisateur.email,
+            "reference": dossier.reference,
+            "code": code,
+            "minutes_validite": 5,
+            "annee": timezone.now().year,
         },
     )

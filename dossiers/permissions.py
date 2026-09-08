@@ -1,10 +1,8 @@
 """Permissions spécifiques au domaine Dossiers.
 
-Ne réutilise PAS `EstProprietaireOuPersonnelSGI` de comptes/permissions.py
-pour l'accès objet à un Dossier : cette dernière autorise tout
-personnel SGI sans vérifier son appartenance à LA SGI précise du
-dossier — ce qui romprait le cloisonnement strict exigé par le
-cahier des charges. `PeutAccederAuDossier` corrige ce point.
+`PeutAccederAuDossier` est la SEULE permission d'accès objet à un
+Dossier : elle vérifie l'appartenance à LA SGI précise du dossier
+(cloisonnement strict exigé par le cahier des charges).
 """
 
 from rest_framework import permissions

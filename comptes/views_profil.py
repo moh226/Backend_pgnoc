@@ -61,7 +61,8 @@ class ChangerMotDePasseAPIView(APIView):
     tokens encore en circulation de l'utilisateur (rotation forcée) :
     toute autre session est déconnectée à son prochain renouvellement.
     Les access tokens restent valides jusqu'à expiration naturelle
-    (15 min) ; le frontend reconnecte explicitement l'utilisateur.
+    (durée configurée par SIMPLE_JWT, 60 min par défaut) ; le frontend
+    reconnecte explicitement l'utilisateur.
     """
 
     permission_classes = (permissions.IsAuthenticated,)

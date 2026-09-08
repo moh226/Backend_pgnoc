@@ -66,7 +66,12 @@ class ChampSelfieValidationTests(APITestCase):
 
 @override_settings(
     MEDIA_ROOT=MEDIA_TEMPORAIRE,
-    STORAGES={"default": {"BACKEND": "django.core.files.storage.FileSystemStorage"}},
+    STORAGES={
+        "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+        # WhiteNoise résout staticfiles_storage dès que STATIC_ROOT
+        # contient des fichiers : l'override reste un dict COMPLET.
+        "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"},
+    },
 )
 class UploadSelfieTests(APITestCase):
     """Upload d'un selfie : empreinte + horodatage + signature serveur."""
@@ -144,7 +149,12 @@ class UploadSelfieTests(APITestCase):
 
 @override_settings(
     MEDIA_ROOT=MEDIA_TEMPORAIRE,
-    STORAGES={"default": {"BACKEND": "django.core.files.storage.FileSystemStorage"}},
+    STORAGES={
+        "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+        # WhiteNoise résout staticfiles_storage dès que STATIC_ROOT
+        # contient des fichiers : l'override reste un dict COMPLET.
+        "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"},
+    },
 )
 class VerificationAuthenticiteSelfieTests(APITestCase):
     """Endpoint d'authenticité : recompute hash + revalidation HMAC."""

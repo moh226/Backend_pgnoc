@@ -199,6 +199,10 @@ class DossierDetailAPIView(generics.RetrieveAPIView):
     """Détail d'un dossier, avec ses valeurs de champs.
 
     GET /api/dossiers/dossiers/<id>/
+
+    La consultation expose des données personnelles massives (identité,
+    justificatifs) : chaque accès est tracé au journal d'audit
+    (conformité CREPMF, §8.3).
     """
 
     serializer_class = DossierDetailSerializer
@@ -206,6 +210,19 @@ class DossierDetailAPIView(generics.RetrieveAPIView):
     queryset = Dossier.objects.select_related("utilisateur", "sgi").prefetch_related(
         "valeurs_champs__champ"
     )
+
+    def retrieve(self, request, *args, **kwargs):
+        instance = self.get_object()
+        journaliser(
+            request.user,
+            JournalAudit.Action.CONSULTATION_DOSSIER,
+            "Dossier",
+            str(instance.pk),
+            apres={"reference": instance.reference, "statut": instance.statut},
+            requete=request,
+        )
+        serializer = self.get_serializer(instance)
+        return Response(serializer.data)
 
 
 class ValeurChampListCreateAPIView(
@@ -441,6 +458,17 @@ class ValeurChampFichierUrlAPIView(generics.GenericAPIView):
         if not valeur.fichier:
             return Response({"detail": "Aucun fichier associé à ce champ."}, status=status.HTTP_404_NOT_FOUND)
 
+        # Chaque génération d'URL signée ouvre l'accès à un justificatif
+        # d'identité : l'accès est tracé (conformité CREPMF).
+        journaliser(
+            request.user,
+            JournalAudit.Action.GENERATION_URL_FICHIER,
+            "ValeurChamp",
+            str(valeur.pk),
+            apres={"dossier": dossier.reference, "champ_id": str(valeur.champ_id)},
+            requete=request,
+        )
+
         return Response({"url_signee": default_storage.url(valeur.fichier)})
 
 
@@ -599,16 +627,32 @@ class DossierAccepterConventionAPIView(DossierProprietaireMixin, generics.Generi
                 status=status.HTTP_409_CONFLICT,
             )
 
-        if not dossier.convention_acceptee:
+        version_actuelle = dossier.sgi.convention.fichier_pdf.name
+
+        # Idempotent SAUF si la convention a changé depuis la dernière
+        # acceptation : il faut alors renouveler l'accord (qui porte
+        # sur la nouvelle version du document).
+        if not dossier.convention_acceptee or dossier.convention_version != version_actuelle:
+            avant = {
+                "convention_acceptee": dossier.convention_acceptee,
+                "convention_version": dossier.convention_version,
+            }
             dossier.convention_acceptee = True
-            dossier.save(update_fields=["convention_acceptee"])
+            # On fige la version acceptée : si la SGI publie ensuite une
+            # nouvelle convention, cette acceptation devient caduque
+            # (vérifié à la soumission par le workflow).
+            dossier.convention_version = version_actuelle
+            dossier.save(update_fields=["convention_acceptee", "convention_version"])
             journaliser(
                 request.user,
                 JournalAudit.Action.ACCEPTATION_CONVENTION,
                 "Dossier",
                 str(dossier.pk),
-                avant={"convention_acceptee": False},
-                apres={"convention_acceptee": True},
+                avant=avant,
+                apres={
+                    "convention_acceptee": True,
+                    "convention_version": dossier.convention_version,
+                },
                 requete=request,
             )
 
@@ -705,12 +749,8 @@ class InvestisseurDashboardAPIView(generics.GenericAPIView):
 
         progression_moyenne = 0.0
         if total > 0:
-            progression_moyenne = round(
-                dossiers.aggregate(avg=Count("progression_pct"))["avg"] / total * 100
-                if total else 0,
-                1,
-            )
             from django.db.models import Avg
+
             progression_moyenne = round(
                 dossiers.aggregate(avg=Avg("progression_pct"))["avg"] or 0,
                 1,

@@ -60,33 +60,3 @@ class EstPersonnelSGI(permissions.BasePermission):
             and request.user.is_authenticated
             and request.user.role.code in self.ROLES_AUTORISES
         )
-
-
-class EstProprietaireOuPersonnelSGI(permissions.BasePermission):
-    """Permission d'objet : propriétaire du dossier OU personnel SGI
-    de la MÊME SGI (cloisonnement strict)."""
-
-    def has_object_permission(self, request, view, obj):
-        if request.user.est_investisseur:
-            return obj.utilisateur_id == request.user.id
-        if request.user.est_admin_general:
-            return True
-        if request.user.role.code in (
-            Role.Code.AGENT_SGI, Role.Code.ADMIN_SGI,
-        ):
-            return (
-                hasattr(obj, "sgi_id")
-                and obj.sgi_id == request.user.sgi_id
-            )
-        return False
-
-
-class MemeSGIQueRequete(permissions.BasePermission):
-    message = "Vous n'avez pas accès aux données de cette SGI."
-
-    def has_object_permission(self, request, view, obj):
-        if request.user.est_admin_general:
-            return True
-        if not hasattr(obj, "sgi_id"):
-            return False
-        return obj.sgi_id == request.user.sgi_id

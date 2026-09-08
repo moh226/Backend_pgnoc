@@ -1,0 +1,15 @@
+{% extends "emails/base.html" %}
+{% block titre %}Votre code de signature{% endblock %}
+{% block contenu %}
+<p>Bonjour <strong>{{ prenom|default:email }}</strong>,</p>
+<p>Pour signer électroniquement votre dossier <strong>{{ reference }}</strong>,
+merci de saisir le code ci-dessous :</p>
+<p style="text-align: center; font-size: 28px; font-weight: bold; letter-spacing: 6px; color: #1a237e;">
+    {{ code }}
+</p>
+<p style="text-align: center; font-size: 13px; color: #999999;">
+    Ce code est valable {{ minutes_validite }} minutes et ne peut être utilisé qu'une seule fois.
+</p>
+<p>Si vous n'êtes pas à l'origine de cette demande, ignorez simplement cet email.</p>
+<p>Cordialement,<br>L'équipe PGNOC-TI</p>
+{% endblock %}

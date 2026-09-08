@@ -12,8 +12,7 @@ Règles appliquées :
 """
 
 from django.db.models.deletion import ProtectedError
-from django.core.exceptions import ValidationError
-from rest_framework import generics, permissions, status
+from rest_framework import generics, permissions, serializers, status
 from rest_framework.response import Response
 
 from audit.models import JournalAudit
@@ -123,7 +122,9 @@ class ChampKYCListCreateAPIView(generics.ListCreateAPIView):
         etape = self.request.query_params.get("etape")
         if etape:
             if not est_uuid_valide(etape):
-                raise ValidationError(
+                # ValidationError DRF (et non Django) pour obtenir un 400
+                # propre au lieu d'un 500 sur un paramètre invalide.
+                raise serializers.ValidationError(
                     {"etape": "Le paramètre `etape` doit être un identifiant UUID valide."}
                 )
             qs = qs.filter(etape_id=etape)

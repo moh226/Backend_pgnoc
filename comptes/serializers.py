@@ -157,6 +157,7 @@ class AgentSerializer(serializers.ModelSerializer):
     mot_de_passe = serializers.CharField(
         write_only=True, required=False, allow_blank=True,
         style={"input_type": "password"},
+        validators=[validate_password],
     )
     mot_de_passe_initial = serializers.CharField(read_only=True)
 

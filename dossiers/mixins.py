@@ -19,11 +19,24 @@ class ChampCorrigeableMixin:
         """Retourne une Response 403 si le champ n'est pas corrigeable, sinon None.
 
         Utilisation : `if conflit := self.verifier_champ_corrigeable(dossier, champ): return conflit`
+
+        Règle UC12 : en REJETE, sont modifiables
+          - les champs signalés par l'agent (commentaire de relecture) ;
+          - les champs OBLIGATOIRES sans valeur existante : un dossier
+            rejeté doit rester soumissible même si la SGI a ajouté/activé
+            un champ obligatoire après le rejet (sinon le dossier est
+            définitivement bloqué : la progression exige 100 % mais le
+            champ serait interdit d'accès). L'agent n'ayant rien jugé sur
+            un champ vide, sa première saisie ne contourne aucune
+            relecture. Les champs facultatifs, eux, restent figés : on
+            ne ré-ouvre pas la saisie générale après rejet.
         """
         if dossier.statut != Dossier.Statut.REJETE:
             return None
         existante = ValeurChamp.objects.filter(dossier=dossier, champ=champ).first()
         if existante and existante.commentaire_agent:
+            return None
+        if not existante and champ.obligatoire:
             return None
         return Response(
             {

@@ -29,8 +29,13 @@ RUN groupadd -r pgnoc && useradd -r -g pgnoc -d /app -s /sbin/nologin pgnoc
 # Code applicatif
 COPY . .
 
-# Collectstatic au build time (CompressedManifestStaticFilesStorage l'exige)
-RUN SECRET_KEY=build-placeholder python manage.py collectstatic --noinput
+# Collectstatic au build time (CompressedManifestStaticFilesStorage l'exige).
+# PHASE_BUILD lève uniquement le garde-fou MinIO (les variables de prod
+# ne sont pas injectées au build ; collectstatic ne touche que les
+# statiques servis par whitenoise, jamais le stockage des justificatifs).
+RUN DJANGO_SECRET_KEY=build-placeholder \
+    DJANGO_COLLECTSTATIC_BUILD=1 \
+    python manage.py collectstatic --noinput
 
 # Donner la propriété à l'utilisateur non-root
 RUN chown -R pgnoc:pgnoc /app
