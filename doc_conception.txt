@@ -1,0 +1,371 @@
+﻿=== PAGE 1 ===
+DOCUMENT DE CONCEPTION
+Plateforme de Gestion Num├®rique de demande d'Ouverture de Comptes-
+Titres pour Investisseurs.
+PGNOC-TI
+
+=== PAGE 2 ===
+1. Introduction
+1.1. Contexte et probl├®matique
+Dans le cadre de la modernisation du march├® financier r├®gional de l'UEMOA (Union 
+├ëconomique et Mon├®taire Ouest-Africaine), les Soci├®t├®s de Gestion et d'Interm├®diation (SGI) 
+sont confront├®es ├á un processus d'ouverture de compte-titre encore largement manuel et papier. 
+Ce processus, encadr├® par le Conseil R├®gional de l'├ëpargne Publique et des March├®s Financiers 
+(CREPMF) et l'Instruction N┬░57-2018, impose des exigences strictes en mati├¿re de connaissance 
+du client (KYC ÔÇö Know Your Customer) et de lutte contre le blanchiment de capitaux et le 
+financement du terrorisme (LBC/FT).
+La gestion manuelle de ces dossiers engendre des d├®lais importants, des risques d'erreurs, une 
+difficult├® de tra├ºabilit├®, et une exp├®rience utilisateur insatisfaisante pour les investisseurs 
+souhaitant acc├®der au march├® BRVM.
+1.2. Objectifs du projet
+´éÀDigitaliser ├á 100% la collecte des donn├®es KYC et des justificatifs (CNIB, passeport, RCCM,  
+etc.).
+´éÀPermettre ├á chaque SGI de configurer dynamiquement son propre formulaire KYC (champs, 
+├®tapes, logique conditionnelle).
+´éÀGarantir le cloisonnement strict des donn├®es entre les SGI (architecture multi-tenant).
+´éÀFournir un back-office s├®curis├® aux agents SGI pour instruire, valider ou rejeter les dossiers.
+´éÀAssurer une tra├ºabilit├® compl├¿te des actions via un journal d'audit.
+´éÀOffrir une exp├®rience utilisateur moderne, fluide et responsive aux investisseurs.
+1.3. P├®rim├¿tre fonctionnel
+Le projet PGNOC-TI couvre exclusivement le processus d'Onboarding Digital / KYC. Il ne traite 
+pas de la gestion de portefeuille, des transactions boursi├¿res, ni du passage d'ordres. Le p├®rim├¿tre 
+se limite ├á :
+´éÀL'inscription et l'authentification des utilisateurs (JWT + Google OAuth).
+´éÀL'adh├®sion ├á une SGI partenaire (s├®lection, pr├®sentation, signature de convention).
+´éÀLa constitution du dossier KYC dynamique (formulaire multi-├®tapes, upload de documents).
+´éÀLa soumission, le suivi et la correction du dossier.
+´éÀL'instruction, la validation et le rejet des dossiers par les agents SGI.
+´éÀLe param├®trage du KYC, de la convention tarifaire et de la pr├®sentation par l'Admin SGI.
+´éÀLa gestion des SGI, des utilisateurs et la consultation du journal d'audit par l'Admin G├®n├®ral.
+
+=== PAGE 3 ===
+2. Architecture G├®n├®rale
+2.1. Architecture technique
+Le syst├¿me adopte une architecture API REST d├®coupl├®e (Backend/Frontend s├®par├®s) avec une 
+orchestration de microservices via Docker Compose. Cette approche garantit la scalabilit├®, la 
+maintenabilit├® et la portabilit├® du syst├¿me.
+2.2. Stack technologique
+Technologie R├┤le Cat├®gorie
+Django 6.0 + DRF Framework web & API 
+RESTBackend
+PostgreSQL 16 Base de donn├®es 
+relationnelleDonn├®es
+Redis 7 Cache haute performance 
+& Message BrokerCache
+Celery 5 File d'attente de t├óches 
+asynchronesAsynchrone
+MinIO Stockage objet S3-
+compatible (Documents 
+KYC)Fichiers
+Docker / Docker Compose Conteneurisation & 
+OrchestrationInfrastructure
+JWT (SimpleJWT) Authentification par jetons S├®curit├®
+Poetry Gestion des d├®pendances Outillage
+
+=== PAGE 4 ===
+Python
+Gunicorn Serveur WSGI de 
+productionProduction
+2.3. Processus global de la plateforme
+Le diagramme ci-dessous illustre le flux complet de la plateforme, de l'inscription de 
+l'investisseur jusqu'├á la validation finale du dossier par la SGI.
+
+=== PAGE 5 ===
+Figure 1: Processus global de la plateforme PGNOC-TI
+
+=== PAGE 6 ===
+3. Identification des Acteurs
+3.1. Acteurs et r├┤les
+Le syst├¿me met en ┼ôuvre un contr├┤le d'acc├¿s bas├® sur les r├┤les (RBAC ÔÇö Role-Based Access 
+Control) avec quatre niveaux de permissions distincts et strictement hi├®rarchis├®s :
+Acteur Type Description
+Investisseur B2C Utilisateur final souhaitant ouvrir un  
+compte-titre. Ne voit que ses propres  
+dossiers.
+Agent SGI B2B Employ├® de la SGI charg├® de 
+l'instruction des dossiers KYC. Ne 
+voit que les dossiers de sa SGI.
+Admin SGI B2B Responsable de la SGI. Configure le  
+KYC, g├¿re les agents, supervise 
+l'activit├® de sa SGI.
+Admin G├®n├®ral SuperAdmin Superviseur global de la plateforme. 
+G├¿re les SGI, les utilisateurs, et 
+consulte le journal d'audit.
+3.2. Matrice des permissions (RBAC)
+Le tableau ci-dessous r├®sume les permissions de chaque r├┤le. Chaque cellule indique si l'acteur a 
+acc├¿s (O U I) ou non (N O N) ├á la fonctionnalit├®.
+Fonctionnalit├® InvestisseurAgent SGIAdmin SGIAdmin G├®n├®ral
+S'inscrire / Se 
+connecterO U IO U IO U IO U I
+Constituer un 
+dossier KYCO U IN O NN O NN O N
+Soumettre / Suivre 
+un dossierO U IN O NN O NN O N
+Corriger un dossier 
+rejet├®O U IN O NN O NN O N
+Consulter les 
+dossiers re├ºusN O NO U IO U IN O N
+Instruire un dossierN O NO U IN O NN O N
+Valider / Rejeter un 
+dossierN O NO U IN O NN O N
+Param├®trer le KYCN O NN O NO U IN O N
+G├®rer les agents SGIN O NN O NO U IN O N
+Publier la 
+convention tarifaireN O NN O NO U IN O N
+R├®assigner un 
+dossierN O NN O NO U IN O N
+G├®rer les SGI 
+partenairesN O NN O NN O NO U I
+G├®rer tous les 
+utilisateursN O NN O NN O NO U I
+Consulter le journal 
+d'auditN O NN O NN O NO U I
+Tableau de bord 
+globalN O NN O NN O NO U I
+
+=== PAGE 7 ===
+4. Analyse des Cas d'Utilisation
+4.1. Diagramme des cas d'utilisation
+Le diagramme ci-dessous pr├®sente l'ensemble des cas d'utilisation identifi├®s, organis├®s par espace 
+utilisateur (Investisseur, Agent SGI, Admin SGI, Admin G├®n├®ral).
+Figure 2: Diagramme des cas d'utilisation
+
+=== PAGE 8 ===
+4.2. Descriptions d├®taill├®es (Espace Investisseur)
+UC01 S'authentifier
+Acteur principal Investisseur, Agent SGI, Admin SGI, Admin G├®n├®ral
+Acteur secondaire Serveur d'authentification Google (connexion via 
+Google)
+Description Permet ├á tout utilisateur de s'authentifier sur la 
+plateforme afin d'acc├®der aux fonctionnalit├®s 
+correspondant ├á son r├┤le.
+Pr├®conditions L'utilisateur poss├¿de un compte actif sur la plateforme.
+Postconditions L'utilisateur est authentifi├® et redirig├® vers son espace. 
+L'├®v├®nement est enregistr├® dans le journal d'audit.
+´éÀSc├®nario nominal :
+1.L'utilisateur acc├¿de ├á la page de connexion.
+2.Le syst├¿me affiche le formulaire (email + mot de passe).
+3.L'utilisateur saisit ses identifiants.
+4.Le syst├¿me v├®rifie les identifiants.
+5.Le syst├¿me identifie le r├┤le de l'utilisateur.
+6.Redirection vers le tableau de bord correspondant au r├┤le.
+7.Enregistrement de l'├®v├®nement dans le journal d'audit.
+UC02 Cr├®er un compte
+Acteur principal Investisseur
+Acteur secondaire Serveur Google, Service d'envoi d'emails
+Description Permet ├á un investisseur de cr├®er un compte sur la 
+plateforme.
+Pr├®conditions L'utilisateur ne poss├¿de pas de compte.
+Postconditions Le compte investisseur est cr├®├®. Un email de 
+confirmation est envoy├®.
+´éÀSc├®nario nominal :
+8.L'utilisateur acc├¿de ├á la page d'inscription.
+9.Le syst├¿me affiche le formulaire d'inscription.
+10.L'utilisateur renseigne : nom, pr├®nom, email, t├®l├®phone, mot de passe.
+11.Le syst├¿me v├®rifie l'unicit├® de l'email.
+12.Le syst├¿me v├®rifie la robustesse du mot de passe.
+13.Cr├®ation du compte avec le r├┤le ┬½ Investisseur ┬╗.
+14.Envoi d'un email de confirmation.
+15.Redirection vers la page de connexion.
+
+=== PAGE 9 ===
+UC06 Constituter son dossier KYC
+
+=== PAGE 10 ===
+4.3. Descriptions d├®taill├®es (Espace Agent SGI)
+UC13 Consulter les dossiers re├ºus
+UC14 Instruire un dossier
+
+=== PAGE 11 ===
+4.4. Descriptions d├®taill├®es (Espace Admin SGI)
+UC15 Param├®trer les ├®tapes du parcours KYC
+UC16 Publier la convention tarifaire
+UC18 G├®rer les comptes agents
+
+=== PAGE 12 ===
+4.5. Descriptions d├®taill├®es (Espace Admin G├®n├®ral)
+UC20 G├®rer les SGI partenaires
+UC21 G├®rer les utilisateurs
+UC22 ÔÇö Consulter le tableau de bord global
+UC23 ÔÇö Consulter le journal d'audit
+
+=== PAGE 13 ===
+5. Diagrammes de S├®quence
+Les diagrammes de s├®quence ci-dessous mod├®lisent les interactions entre les acteurs et les 
+composants du syst├¿me pour les cas d'utilisation les plus importants.
+5.1. Constituer un dossier KYC (UC06)
+Ce diagramme montre le flux de communication lorsqu'un investisseur remplit son formulaire 
+KYC ├®tape par ├®tape, avec la sauvegarde automatique (auto-save) et le t├®l├®versement de 
+documents vers MinIO.
+
+=== PAGE 15 ===
+Figure 3: Diagramme de s├®quence : Constituer un dossier KYC
+
+=== PAGE 16 ===
+5.2. Param├®trer le KYC (UC15)
+Ce diagramme illustre le processus par lequel l'Admin SGI configure dynamiquement les ├®tapes 
+et champs du formulaire KYC de sa SGI.
+Figure 4: Diagramme de s├®quence : Param├®trer le KYC
+5.3. Instruire un dossier (UC14)
+Ce diagramme d├®taille le flux d'instruction d'un dossier par l'Agent SGI : verrouillage, examen, 
+commentaires sur les champs, et d├®cision finale (validation ou rejet).
+
+=== PAGE 17 ===
+Figure 5: Diagramme de s├®quence : Instruire un dossier
+
+=== PAGE 18 ===
+6. Conception des Donn├®es
+6.1. Diagramme de classes
+Le diagramme de classes ci-dessous pr├®sente l'architecture compl├¿te du mod├¿le de donn├®es (14 
+classes optimis├®es). Il utilise les conventions UML standard : h├®ritage (triangle vide), 
+composition (losange noir), association (ligne simple).
+Figure 6: Diagramme de classes UML (14 classes)
+
+=== PAGE 19 ===
+6.2. Explication d├®taill├®e des classes
+6.2.1. Gestion des Acteurs (H├®ritage et Profils)
+La classe Utilisateur est la table racine qui g├¿re l'authentification globale. Elle centralise l'email et  
+le mot de passe pour s├®curiser l'authentification au m├¬me endroit (DRF / JWT). Le champ 'role' 
+permet de router l'utilisateur vers son espace d├®di├® d├¿s la connexion.
+Les classes Investisseur, AgentSGI, AdminSGI et AdminGeneral h├®ritent d'Utilisateur via des 
+relations OneToOne (Profils). L'Investisseur poss├¿de un typePersonne (Physique/Morale) et un 
+googleId optionnel. L'AgentSGI poss├¿de un matricule d'employ├®.
+6.2.2. ├ëcosyst├¿me des SGI (Param├®trage)
+La classe SGI repr├®sente l'entreprise partenaire. Elle est li├®e par composition (losange noir) ├á 
+ConventionTarifaire et InformationPresentation : si la SGI est supprim├®e, ces ├®l├®ments sont 
+d├®truits avec elle. Chaque SGI emploie des AgentSGI et est administr├®e par un AdminSGI.
+6.2.3. Moteur de Formulaires Dynamiques (KYC)
+C'est la partie la plus intelligente du syst├¿me. Les classes EtapeKYC et ChampKYC permettent ├á 
+l'Admin SGI de cr├®er dynamiquement les ├®tapes et champs du parcours KYC. ChampKYC 
+poss├¿de une association r├®flexive (champParentId) qui permet la logique conditionnelle : ┬½ Le 
+champ RCCM ne s'affiche QUE SI le champ Type Personne vaut 'Morale' ┬╗.
+6.2.4. Le Dossier (Transaction Centrale)
+La classe Dossier int├¿gre les informations de signature (typeSignature, donneeSignature, 
+dateSignature) directement dans la m├¬me table pour ├®viter les jointures inutiles (optimisation de 
+performance). La classe ValeurChamp est la table interm├®diaire entre Dossier et ChampKYC. 
+Elle stocke les r├®ponses de l'investisseur et les commentaires de l'agent directement sur la valeur 
+concern├®e.
+6.2.5. S├®curit├® et Transparence
+La classe JournalAudit est la 'bo├«te noire' du syst├¿me. Elle enregistre chaque action sensible avec 
+l'├®tat avant/apr├¿s (en JSONB), l'adresse IP et le User-Agent. La classe Notification permet le 
+traitement asynchrone des alertes via Celery/Redis.
+
+=== PAGE 20 ===
+6.3. Mod├¿le Logique de Donn├®es (MLD)
+Le MLD traduit le diagramme de classes en structure de base de donn├®es relationnelle 
+PostgreSQL. L'h├®ritage est g├®r├® par une table centrale Utilisateur li├®e aux profils via des relations  
+OneToOne.
+Table Champs principaux
+UTILISATEUR id (UUID PK), email, mot_de_passe, nom, prenom, role,  
+actif, date_creation
+INVESTISSEUR utilisateur_id (UUID PK/FK), type_personne, google_id
+SGI id (UUID PK), nom, logo_url, est_active
+AGENT_SGI utilisateur_id (UUID PK/FK), matricule, sgi_id (FK)
+ADMIN_SGI utilisateur_id (UUID PK/FK), sgi_id (FK)
+ADMIN_GENERAL utilisateur_id (UUID PK/FK)
+CONVENTION_TARIFAIRE id (UUID PK), sgi_id (FK UNIQUE), fichier_pdf_url
+INFO_PRESENTATION id (UUID PK), sgi_id (FK UNIQUE), 
+contenu_marketing
+ETAPE_KYC id (UUID PK), sgi_id (FK), titre, ordre
+CHAMP_KYC id (UUID PK), etape_id (FK), label, type_champ, 
+obligatoire, options (JSONB), champ_parent_id (FK 
+self), condition_valeur
+DOSSIER id (UUID PK), investisseur_id (FK), sgi_id (FK), 
+agent_id (FK), statut, type_signature, donnee_signature, 
+date_signature, progression_pct, ...
+VALEUR_CHAMP id (UUID PK), dossier_id (FK), champ_id (FK), 
+valeur_texte, valeur_fichier_url, commentaire_agent, 
+est_corrige ÔÇö UNIQUE(dossier_id, champ_id)
+JOURNAL_AUDIT id (UUID PK), utilisateur_id (FK), entite_concernee, 
+entite_id, action, avant (JSONB), apres (JSONB), 
+ip_address, user_agent, date_action
+NOTIFICATION id (UUID PK), utilisateur_id (FK), titre, message, lue, 
+type_notif, date_creation
+
+=== PAGE 21 ===
+6.4. Dictionnaire de donn├®es (extrait)
+Ce dictionnaire d├®taille le type physique PostgreSQL de chaque attribut cl├®, avec ses contraintes 
+et r├¿gles de gestion.
+Champ Type SQL Contraintes & R├¿gles
+UTILISATEUR.id UUID PK, Auto-g├®n├®r├® (UUIDv4)
+UTILISATEUR.email VARCHAR(255) Unique, Not Null
+UTILISATEUR.mot_de_passe VARCHAR(255) Not Null, Hash├® (Argon2/PBKDF2)
+UTILISATEUR.role VARCHAR(50) Not Null, Enum: INVESTISSEUR, 
+AGENT_SGI, ADMIN_SGI, 
+ADMIN_GEN
+INVESTISSEUR.type_personne VARCHAR(20) Not Null, Enum: PHYSIQUE, 
+MORALE
+CHAMP_KYC.options JSONB Nullable, Ex: ["MR", "MME"]
+CHAMP_KYC.champ_parent_id UUID FK(self) Nullable, Logique conditionnelle
+DOSSIER.statut VARCHAR(50) Enum: BROUILLON, SOUMIS, 
+EN_INSTRUCTION, REJETE, 
+VALIDE
+DOSSIER.type_signature VARCHAR(50) Enum: OTP, MANUELLE, 
+BIOMETRIQUE
+VALEUR_CHAMP UNIQUE(dossier_id, champ_id) Un dossier = une seule valeur par 
+champ
+JOURNAL_AUDIT.avant JSONB Nullable, ├ëtat pr├®c├®dent de la 
+donn├®e
+JOURNAL_AUDIT.apres JSONB Nullable, Nouvel ├®tat
+
+=== PAGE 22 ===
+7. Cycle de Vie d'un Dossier
+Le dossier KYC suit un cycle de vie strict avec des transitions d'├®tat contr├┤l├®es. Chaque transition  
+est enregistr├®e dans le journal d'audit et d├®clenche une notification.
+├ëtat source ├ëtat cible D├®clencheur Cas d'utilisation
+BROUILLON SOUMIS Investisseur soumet son 
+dossier completUC10
+SOUMIS EN_INSTRUCTION Un Agent SGI prend en 
+charge le dossierUC14
+EN_INSTRUCTION VALID├ë L'Agent SGI valide le 
+dossierUC14
+EN_INSTRUCTION REJET├ë L'Agent SGI rejette le 
+dossier avec commentairesUC14
+REJET├ë SOUMIS L'Investisseur corrige les 
+champs et resoumetUC12
+Figure 7 : Diagramme dÔÇÖ├®tats: Cycle de vie d'un dossier KYC
+
+=== PAGE 23 ===
+8. Exigences Non Fonctionnelles
+8.1. S├®curit├®
+´éÀAuthentification JWT : Tokens d'acc├¿s (60 min) et de rafra├«chissement (24h). Header 
+Authorization: Bearer <token>.
+´éÀHachage des mots de passe : Argon2 / PBKDF2 (irr├®versible). Aucun mot de passe stock├® en 
+clair.
+´éÀRBAC : Permissions strictes par r├┤le. Classes de permission Django REST Framework 
+d├®di├®es.
+´éÀCloisonnement Multi-Tenant : Filtrage automatique par SGI_ID au niveau de l'ORM 
+(QuerySets).
+´éÀURLs sign├®es MinIO : Les documents KYC sont accessibles uniquement via des liens 
+temporaires.
+´éÀProtection CORS : En production, seuls les domaines autoris├®s peuvent acc├®der ├á l'API.
+´éÀProtection CSRF : Actif pour les sessions admin Django.
+´éÀValidation des mots de passe : 4 validateurs (similarit├®, longueur, dictionnaire, num├®rique).
+8.2. Performance
+´éÀCache Redis : Formulaires KYC et donn├®es fr├®quemment acc├®d├®es mises en cache.
+´éÀCelery Workers : Emails et traitements lourds ex├®cut├®s en arri├¿re-plan (non-bloquants).
+´éÀPagination : Toutes les listes sont pagin├®es (20 ├®l├®ments/page par d├®faut).
+´éÀGunicorn multi-workers : Serveur WSGI de production avec 4 workers parall├¿les.
+8.3. Tra├ºabilit├® et conformit├® CREPMF
+´éÀJournal d'audit immuable : Chaque action sensible (CREATE, UPDATE, DELETE) est 
+enregistr├®e.
+´éÀHistorisation JSONB : Les ├®tats avant/apr├¿s de chaque modification sont sauvegard├®s.
+´éÀM├®tadonn├®es l├®gales : Adresse IP, User-Agent, horodatage de chaque action.
+´éÀNon-suppression : Le journal d'audit est en lecture seule (INSERT only). Aucune suppression  
+possible.
+´éÀExport : Le journal est exportable en CSV et PDF pour les contr├┤les r├®glementaires.
+
+=== PAGE 24 ===
+9. Perspectives d'├ëvolution
+Les fonctionnalit├®s suivantes sont envisag├®es pour les versions futures de la plateforme :
+´éÀMessagerie int├®gr├®e : Espace de discussion entre investisseur et agent SGI post-validation.
+´éÀV├®rification automatique par IA/OCR : Analyse automatique des documents (CNI, passeport)  
+pour d├®tecter les fraudes et extraire les informations.
+´éÀApplication mobile native : Versions iOS et Android pour les investisseurs.
+´éÀSignature biom├®trique : Int├®gration de la v├®rification faciale pour la signature ├®lectronique.
+´éÀTableau de bord analytique avanc├® : Business Intelligence avec graphiques interactifs et 
+export PDF.
+´éÀAPI publique : Ouverture d'une API pour int├®gration avec les syst├¿mes internes des SGI.
+´éÀEspace pour formateur ┬á: un formateur a la BRVM peut acheter un espace sur la plateforme 
+pour faire sa PUB et proposer ses services aux nouveaux investisseurs.
+

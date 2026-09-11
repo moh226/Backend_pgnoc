@@ -37,31 +37,25 @@ def healthz(request):
 
 urlpatterns = [
     path("healthz/", healthz, name="healthz"),
-    path('admin/', admin.site.urls),
+    path("admin/", admin.site.urls),
 
-    path("api/comptes/", include("comptes.urls")),
-    path("api/sgi/", include("sgi.urls")),
+    path("api/v1/comptes/", include("comptes.urls")),
+    path("api/v1/sgi/", include("sgi.urls")),
+    path("api/v1/kyc/", include("dossiers.urls")),
+    path("api/v1/admin/kyc/", include("dossiers.urls_admin")),
+    path("api/v1/audit/", include("audit.urls")),
+    path("api/v1/notifications/", include("notifications.urls")),
+    path("api/v1/admin/", include("administration.urls")),
+    path("api/v1/accueil/", include("accueil.urls")),
 
-    path("api/dossiers/", include("dossiers.urls")),
-
-    path("api/audit/", include("audit.urls")),
-
-    path("api/notifications/", include("notifications.urls")),
-
-    path("api/admin-general/", include("administration.urls")),
-
-    path("api/accueil/", include("accueil.urls")),
-
-    path("api/schema/", SpectacularAPIView.as_view(), name="schema"),
-
+    path("api/v1/schema/", SpectacularAPIView.as_view(), name="schema"),
     path(
-        "api/docs/",
+        "api/v1/docs/",
         SpectacularSwaggerView.as_view(url_name="schema"),
         name="swagger-ui",
     ),
-
     path(
-        "api/redoc/",
+        "api/v1/redoc/",
         SpectacularRedocView.as_view(url_name="schema"),
         name="redoc",
     ),

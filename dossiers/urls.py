@@ -19,10 +19,6 @@ from dossiers.views_depot import (
     DepotDetailAgentAPIView, DepotListeAgentAPIView,
     DepotMinimumInvestisseurAPIView, DepotVerifierAgentAPIView,
 )
-from dossiers.views_kyc_admin import (
-    ChampKYCListCreateAPIView, ChampKYCRetrieveUpdateDestroyAPIView,
-    EtapeKYCListCreateAPIView, EtapeKYCRetrieveUpdateDestroyAPIView,
-)
 
 app_name = "dossiers"
 
@@ -141,23 +137,5 @@ urlpatterns = [
         name="dossier-valeur-selfie-authenticite",
     ),
 
-    path("admin/etapes-kyc/",
-         EtapeKYCListCreateAPIView.as_view(),
-         name="admin-etapes-kyc",
-         ),
-
-    path("admin/etapes-kyc/<uuid:pk>/",
-         EtapeKYCRetrieveUpdateDestroyAPIView.as_view(),
-         name="admin-etape-kyc",
-         ),
-
-    path("admin/champs-kyc/",
-         ChampKYCListCreateAPIView.as_view(),
-         name="admin-champs-kyc",
-         ),
-
-    path("admin/champs-kyc/<uuid:pk>/",
-         ChampKYCRetrieveUpdateDestroyAPIView.as_view(),
-         name="admin-champ-kyc",
-         ),
+    
 ]

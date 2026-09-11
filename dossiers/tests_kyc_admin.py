@@ -37,7 +37,7 @@ class ParametrageEtapeKYCTests(APITestCase):
 
     def test_creation_etape_claque_sur_ma_sgi(self):
         reponse = self.client.post(
-            reverse("dossiers:admin-etapes-kyc"),
+            reverse("dossiers_admin:etapes"),
             {"nom": "Identité", "ordre": 1},
             format="json",
         )
@@ -48,7 +48,7 @@ class ParametrageEtapeKYCTests(APITestCase):
 
     def test_la_sgi_est_ignoree_si_envoyee_par_le_client(self):
         reponse = self.client.post(
-            reverse("dossiers:admin-etapes-kyc"),
+            reverse("dossiers_admin:etapes"),
             {"nom": "Identité", "ordre": 1, "sgi": str(self.sgi_b.pk)},
             format="json",
         )
@@ -58,7 +58,7 @@ class ParametrageEtapeKYCTests(APITestCase):
 
     def test_liste_cloisonnee_aux_etapes_de_ma_sgi(self):
         EtapeKYC.objects.create(sgi=self.sgi_a, nom="Identité", ordre=1)
-        reponse = self.client.get(reverse("dossiers:admin-etapes-kyc"))
+        reponse = self.client.get(reverse("dossiers_admin:etapes"))
         self.assertEqual(reponse.status_code, status.HTTP_200_OK)
         etapes = {e["nom"] for e in reponse.data["results"]}
         self.assertEqual(etapes, {"Identité"})
@@ -66,18 +66,18 @@ class ParametrageEtapeKYCTests(APITestCase):
     def test_admin_b_ne_voit_pas_les_etapes_de_a(self):
         EtapeKYC.objects.create(sgi=self.sgi_a, nom="Identité", ordre=1)
         self.client.force_authenticate(self.admin_b)
-        reponse = self.client.get(reverse("dossiers:admin-etapes-kyc"))
+        reponse = self.client.get(reverse("dossiers_admin:etapes"))
         self.assertEqual(reponse.data["count"], 1)
         self.assertEqual(reponse.data["results"][0]["nom"], "Étrangère")
 
     def test_patch_et_delete_sur_etape_etrangere_renvoient_404(self):
         patch = self.client.patch(
-            reverse("dossiers:admin-etape-kyc", kwargs={"pk": self.etape_b.pk}),
+            reverse("dossiers_admin:etape", kwargs={"pk": self.etape_b.pk}),
             {"nom": "Piraté"},
             format="json",
         )
         suppression = self.client.delete(
-            reverse("dossiers:admin-etape-kyc", kwargs={"pk": self.etape_b.pk}),
+            reverse("dossiers_admin:etape", kwargs={"pk": self.etape_b.pk}),
         )
         self.assertEqual(patch.status_code, status.HTTP_404_NOT_FOUND)
         self.assertEqual(suppression.status_code, status.HTTP_404_NOT_FOUND)
@@ -85,7 +85,7 @@ class ParametrageEtapeKYCTests(APITestCase):
     def test_ordre_duplique_refuse(self):
         EtapeKYC.objects.create(sgi=self.sgi_a, nom="Identité", ordre=1)
         reponse = self.client.post(
-            reverse("dossiers:admin-etapes-kyc"),
+            reverse("dossiers_admin:etapes"),
             {"nom": "Documents", "ordre": 1},
             format="json",
         )
@@ -101,25 +101,25 @@ class ParametrageEtapeKYCTests(APITestCase):
         )
         ValeurChamp.objects.create(dossier=dossier, champ=champ, valeur="Awa")
         reponse = self.client.delete(
-            reverse("dossiers:admin-etape-kyc", kwargs={"pk": etape.pk}),
+            reverse("dossiers_admin:etape", kwargs={"pk": etape.pk}),
         )
         self.assertEqual(reponse.status_code, status.HTTP_409_CONFLICT)
 
     def test_suppression_etape_vide_ok(self):
         reponse = self.client.delete(
-            reverse("dossiers:admin-etape-kyc", kwargs={"pk": self.etape_b.pk}),
+            reverse("dossiers_admin:etape", kwargs={"pk": self.etape_b.pk}),
         )
         self.assertEqual(reponse.status_code, status.HTTP_404_NOT_FOUND)
         etape = EtapeKYC.objects.create(sgi=self.sgi_a, nom="Identité", ordre=1)
         reponse = self.client.delete(
-            reverse("dossiers:admin-etape-kyc", kwargs={"pk": etape.pk}),
+            reverse("dossiers_admin:etape", kwargs={"pk": etape.pk}),
         )
         self.assertEqual(reponse.status_code, status.HTTP_204_NO_CONTENT)
 
     def test_desactivation_retire_l_etape_du_parcours_investisseur(self):
         etape = EtapeKYC.objects.create(sgi=self.sgi_a, nom="Identité", ordre=1)
         reponse = self.client.patch(
-            reverse("dossiers:admin-etape-kyc", kwargs={"pk": etape.pk}),
+            reverse("dossiers_admin:etape", kwargs={"pk": etape.pk}),
             {"actif": False},
             format="json",
         )
@@ -132,7 +132,7 @@ class ParametrageEtapeKYCTests(APITestCase):
 
     def test_seul_un_admin_sgi_peut_parametrer(self):
         self.client.force_authenticate(_investisseur("inv@example.com"))
-        reponse = self.client.get(reverse("dossiers:admin-etapes-kyc"))
+        reponse = self.client.get(reverse("dossiers_admin:etapes"))
         self.assertEqual(reponse.status_code, status.HTTP_403_FORBIDDEN)
 
 
@@ -145,7 +145,7 @@ class ParametrageChampKYCTests(APITestCase):
         self.admin_a = _admin("admin.a@example.com", self.sgi_a)
         self.etape_a = EtapeKYC.objects.create(sgi=self.sgi_a, nom="Identité", ordre=1)
         self.etape_b = EtapeKYC.objects.create(sgi=self.sgi_b, nom="Identité", ordre=1)
-        self.url_liste = reverse("dossiers:admin-champs-kyc")
+        self.url_liste = reverse("dossiers_admin:champs")
         self.client.force_authenticate(self.admin_a)
 
     def test_creation_champ_sur_ma_sgi(self):
@@ -218,7 +218,7 @@ class ParametrageChampKYCTests(APITestCase):
             type=ChampKYC.TypeChamp.TEXTE_COURT,
         )
         reponse = self.client.patch(
-            reverse("dossiers:admin-champ-kyc", kwargs={"pk": champ.pk}),
+            reverse("dossiers_admin:champ", kwargs={"pk": champ.pk}),
             {"obligatoire": True, "actif": False},
             format="json",
         )
@@ -233,7 +233,7 @@ class ParametrageChampKYCTests(APITestCase):
             type=ChampKYC.TypeChamp.TEXTE_COURT,
         )
         reponse = self.client.patch(
-            reverse("dossiers:admin-champ-kyc", kwargs={"pk": champ_etranger.pk}),
+            reverse("dossiers_admin:champ", kwargs={"pk": champ_etranger.pk}),
             {"nom": "Piraté"},
             format="json",
         )
@@ -270,7 +270,7 @@ class ParametrageChampKYCTests(APITestCase):
         )
         ValeurChamp.objects.create(dossier=dossier, champ=champ, valeur="Awa")
         reponse = self.client.delete(
-            reverse("dossiers:admin-champ-kyc", kwargs={"pk": champ.pk}),
+            reverse("dossiers_admin:champ", kwargs={"pk": champ.pk}),
         )
         self.assertEqual(reponse.status_code, status.HTTP_409_CONFLICT)
 
@@ -286,7 +286,7 @@ class ParametrageChampKYCTests(APITestCase):
             champ_parent=pere, valeur_declencheur="Morale",
         )
         reponse = self.client.delete(
-            reverse("dossiers:admin-champ-kyc", kwargs={"pk": pere.pk}),
+            reverse("dossiers_admin:champ", kwargs={"pk": pere.pk}),
         )
         self.assertEqual(reponse.status_code, status.HTTP_409_CONFLICT)
 
@@ -296,6 +296,6 @@ class ParametrageChampKYCTests(APITestCase):
             type=ChampKYC.TypeChamp.TEXTE_COURT,
         )
         reponse = self.client.delete(
-            reverse("dossiers:admin-champ-kyc", kwargs={"pk": champ.pk}),
+            reverse("dossiers_admin:champ", kwargs={"pk": champ.pk}),
         )
         self.assertEqual(reponse.status_code, status.HTTP_204_NO_CONTENT)

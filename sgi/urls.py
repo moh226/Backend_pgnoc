@@ -14,7 +14,7 @@ urlpatterns = [
     path("", SGIListAPIView.as_view(), name="sgi-list"),
     path("<uuid:pk>/", SGIFicheAPIView.as_view(), name="sgi-fiche"),
     path("admin/dashboard/", AdminSGIDashboardAPIView.as_view(), name="admin-dashboard"),
-    path("admin/convention/", ConventionTarifaireAdminAPIView.as_view(), name="admin-convention"),
-    path("admin/presentation/", PresentationAdminAPIView.as_view(), name="admin-presentation"),
-    path("admin/depot/", ConfigDepotMinimumAdminAPIView.as_view(), name="admin-depot"),
+    path("admin/conventions/", ConventionTarifaireAdminAPIView.as_view(), name="admin-conventions"),
+    path("admin/presentations/", PresentationAdminAPIView.as_view(), name="admin-presentations"),
+    path("admin/depots/", ConfigDepotMinimumAdminAPIView.as_view(), name="admin-depots"),
 ]

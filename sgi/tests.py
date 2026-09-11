@@ -80,7 +80,7 @@ class ValidationFichierConventionTests(APITestCase):
             sgi=self.sgi,
             role=Role.Code.ADMIN_SGI,
         )
-        self.url = reverse("sgi:admin-convention")
+        self.url = reverse("sgi:admin-conventions")
         self.client.force_authenticate(self.admin)
 
     def test_pdf_valide_accepte(self):

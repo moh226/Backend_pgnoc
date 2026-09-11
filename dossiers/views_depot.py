@@ -194,16 +194,18 @@ class DepotMinimumInvestisseurAPIView(DossierProprietaireMixin, generics.Generic
         return Response(DepotMinimumSerializer(depot).data, status=status.HTTP_200_OK)
 
 
-class DepotListeAgentAPIView(generics.GenericAPIView):
+class DepotListeAgentAPIView(generics.ListAPIView):
     """File d'attente des dépôts minimum de la SGI (personnel SGI).
 
-    GET /api/dossiers/depots/?statut=PREUVE_DEPOSEE
+    GET /api/v1/kyc/depots/?statut=PREUVE_DEPOSEE
     Filtrage multi-statuts : ?statut=PREUVE_DEPOSEE&statut=REJETE
     (et/ou liste séparée par des virgules).
+    Réponse paginée : {results, count, next, previous}.
     """
 
     serializer_class = DepotMinimumSerializer
     permission_classes = (permissions.IsAuthenticated, EstPersonnelSGI)
+    pagination_class = None  # utilise le PageNumberPagination par défaut DRF
 
     def get_queryset(self):
         qs = (
@@ -219,12 +221,6 @@ class DepotListeAgentAPIView(generics.GenericAPIView):
         if statuts:
             qs = qs.filter(statut__in=statuts)
         return qs
-
-    def get(self, request):
-        depots = self.get_queryset()
-        return Response(
-            DepotMinimumSerializer(depots, many=True).data, status=status.HTTP_200_OK
-        )
 
 
 class DepotDetailAgentAPIView(generics.GenericAPIView):

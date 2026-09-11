@@ -57,7 +57,7 @@ class PublicationConventionTests(APITestCase):
         self.investisseur = Utilisateur.objects.create_user(
             "inv@example.com", "S3curise!2026",
         )
-        self.url = reverse("sgi:admin-convention")
+        self.url = reverse("sgi:admin-conventions")
         self.client.force_authenticate(self.admin_a)
 
     def test_publication_convention_pdf(self):
@@ -95,7 +95,7 @@ class PublicationConventionTests(APITestCase):
         self.assertFalse(ConventionTarifaire.objects.filter(sgi=self.sgi_b).exists())
 
     def test_presentation_publication_et_lecture(self):
-        url = reverse("sgi:admin-presentation")
+        url = reverse("sgi:admin-presentations")
         reponse = self.client.put(
             url,
             {
@@ -129,7 +129,7 @@ class PublicationConventionTests(APITestCase):
         self.assertEqual(reponse.data["autorite_agrement"], "AMF-UEMOA (ex-CREPMF)")
 
     def test_presentation_listes_remplacees_integralement(self):
-        url = reverse("sgi:admin-presentation")
+        url = reverse("sgi:admin-presentations")
         self.client.put(
             url,
             {"mission": "V1", "activites": [{"titre": "Ancien"}], "membres": [{"nom": "A"}]},
@@ -149,7 +149,7 @@ class PublicationConventionTests(APITestCase):
         self.assertEqual(list(presentation.membres.values_list("nom", flat=True)), ["A"])
 
     def test_presentation_validation_entrees(self):
-        url = reverse("sgi:admin-presentation")
+        url = reverse("sgi:admin-presentations")
         reponse = self.client.put(
             url,
             {"activites": [{"titre": "   "}]},
@@ -165,7 +165,7 @@ class PublicationConventionTests(APITestCase):
         for utilisateur, url in [
             (self.agent, self.url),
             (self.investisseur, self.url),
-            (self.agent, reverse("sgi:admin-presentation")),
+            (self.agent, reverse("sgi:admin-presentations")),
         ]:
             self.client.force_authenticate(utilisateur)
             self.assertEqual(

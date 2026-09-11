@@ -146,7 +146,7 @@ class DepotMinimumTests(APITestCase):
 
     def test_admin_active_l_exigence_et_config_devient_visible(self):
         self.client.force_authenticate(self.admin_a)
-        url = reverse("sgi:admin-depot")
+        url = reverse("sgi:admin-depots")
         rep = self.client.put(
             url,
             {
@@ -178,7 +178,7 @@ class DepotMinimumTests(APITestCase):
 
     def test_config_incoherente_refusee(self):
         self.client.force_authenticate(self.admin_a)
-        url = reverse("sgi:admin-depot")
+        url = reverse("sgi:admin-depots")
 
         # Montant nul alors que le dépôt est exigé.
         rep = self.client.put(
@@ -210,7 +210,7 @@ class DepotMinimumTests(APITestCase):
     def test_seul_admin_sgi_configure(self):
         self.client.force_authenticate(self.agent_a)
         rep = self.client.put(
-            reverse("sgi:admin-depot"),
+            reverse("sgi:admin-depots"),
             {"exige_depot": True, "montant_depot_min": 5000, "methodes_acceptees": ["WAVE"]},
             format="json",
         )
