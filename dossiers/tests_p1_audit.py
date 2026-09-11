@@ -101,19 +101,20 @@ class PreuveSignatureCouvreContenuTests(APITestCase):
         self.assertEqual(self.dossier.donnee_signature, "")
         self.assertEqual(self.dossier.type_signature, "")
 
-        # Resoumission sans re-signature : refusée.
-        with self.assertRaises(Exception):
-            transiter(self.dossier, Dossier.Statut.SOUMIS)
-
-        # Après re-signature du contenu corrigé : la resoumission passe.
+        # Résoumission SANS nouvelle signature : acceptée — la preuve du
+        # contenu corrigé est re-scellée automatiquement (l'investisseur
+        # a déjà signé une fois : choix produit « signer une seule fois »).
         ValeurChamp.objects.filter(dossier=self.dossier, champ=self.champ).update(
             valeur="Awa Corrigée",
         )
-        _signer_dossier(self.dossier)
         transiter(self.dossier, Dossier.Statut.SOUMIS)
         self.dossier.refresh_from_db()
         self.assertEqual(self.dossier.statut, Dossier.Statut.SOUMIS)
         self.assertEqual(self.dossier.version, 2)
+        # La preuve re-scellée couvre le contenu CORRIGÉ (format OTP).
+        self.assertNotEqual(self.dossier.donnee_signature, "")
+        self.assertTrue(self.dossier.donnee_signature.startswith("sha256:"))
+        self.assertIn("|contenu:", self.dossier.donnee_signature)
 
 
 class ConventionVersioneeTests(APITestCase):

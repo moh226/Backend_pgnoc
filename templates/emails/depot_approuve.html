@@ -1,0 +1,9 @@
+{% extends "emails/base.html" %}
+{% block titre %}Preuve de dépôt approuvée{% endblock %}
+{% block contenu %}
+<p>Bonjour <strong>{{ prenom|default:email }}</strong>,</p>
+<p>Votre preuve de dépôt de <strong>{{ montant_depose }} FCFA</strong> pour le dossier <strong>{{ reference }}</strong> a été approuvée par la SGI <strong>{{ sgi_nom }}</strong>.</p>
+<p>Votre compte-titres est désormais <strong>ouvert</strong> : votre dossier est activé. Vous pouvez suivre son évolution depuis votre espace investisseur.</p>
+<p><a href="{{ url_dossier }}" style="color:#1565c0;">Voir mon dossier</a></p>
+<p>Cordialement,<br>L'équipe PGNOC-TI</p>
+{% endblock %}

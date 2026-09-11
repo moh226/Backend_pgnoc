@@ -5,6 +5,7 @@ from rest_framework import status
 from rest_framework.response import Response
 
 from dossiers.models import Dossier, ValeurChamp
+from pgnoc.erreurs import erreur
 
 
 class ChampCorrigeableMixin:
@@ -22,14 +23,27 @@ class ChampCorrigeableMixin:
 
         Règle UC12 : en REJETE, sont modifiables
           - les champs signalés par l'agent (commentaire de relecture) ;
-          - les champs OBLIGATOIRES sans valeur existante : un dossier
-            rejeté doit rester soumissible même si la SGI a ajouté/activé
-            un champ obligatoire après le rejet (sinon le dossier est
-            définitivement bloqué : la progression exige 100 % mais le
-            champ serait interdit d'accès). L'agent n'ayant rien jugé sur
-            un champ vide, sa première saisie ne contourne aucune
-            relecture. Les champs facultatifs, eux, restent figés : on
-            ne ré-ouvre pas la saisie générale après rejet.
+          - les champs OBLIGATOIREs dont la valeur n'a JAMAIS été relue
+            par l'agent : soit sans valeur, soit avec une valeur créée
+            APRÈS le rejet (champ ajouté/activé par la SGI après coup,
+            ou champ resté vide). Sans cette ouverture, le dossier serait
+            définitivement bloqué : la progression exige 100 % mais ces
+            champs seraient interdits d'accès. L'agent n'ayant rien jugé
+            sur une valeur inexistante au moment de sa relecture, aucune
+            décision n'est contournée. Le « créée après le rejet » se
+            teste par date_creation (auto_now_add : immuable lors des
+            update_or_create successifs) contre date_decision : la
+            valeur reste donc éditable AUTANT DE FOIS que nécessaire
+            tant qu'elle n'est pas passée par une relecture (régression
+            historique : seule la première écriture passait, toute
+            retouche était ensuite refusée). Les champs facultatifs,
+            eux, restent figés : on ne ré-ouvre pas la saisie générale
+            après rejet.
+
+        L'erreur embarque le champ fautif (`champ`) ET la liste des
+        champs à corriger (`champs_a_corriger`, avec le commentaire de
+        l'agent) : le frontend peut verrouiller visuellement le bon
+        champ et proposer un parcours guidé vers les corrections.
         """
         if dossier.statut != Dossier.Statut.REJETE:
             return None
@@ -38,15 +52,47 @@ class ChampCorrigeableMixin:
             return None
         if not existante and champ.obligatoire:
             return None
-        return Response(
-            {
-                "detail": (
-                    "Dossier rejeté : seuls les champs signalés par l'agent "
-                    "(avec un retour de relecture) peuvent être corrigés."
-                ),
-            },
-            status=status.HTTP_403_FORBIDDEN,
+        if (
+            existante
+            and champ.obligatoire
+            and dossier.date_decision
+            and existante.date_creation
+            and existante.date_creation > dossier.date_decision
+        ):
+            return None
+        return erreur(
+            "CHAMP_VERROUILLE",
+            (
+                f"Le champ « {champ.nom} » a été jugé conforme lors de la "
+                "relecture : il n'est pas modifiable. Seuls les champs "
+                "signalés par l'agent peuvent être corrigés."
+            ),
+            status.HTTP_403_FORBIDDEN,
+            champ=champ.nom,
+            champs_a_corriger=self.champs_a_corriger(dossier),
         )
+
+    @staticmethod
+    def champs_a_corriger(dossier):
+        """Champs signalés par l'agent (commentaire de relecture) sur CE dossier.
+
+        Chaque entrée porte le nom du champ ET le commentaire de l'agent :
+        l'investisseur voit ce qui est attendu de lui sans avoir à
+        deviner ni re-parcourir tout le formulaire.
+        """
+        valeurs = (
+            ValeurChamp.objects.filter(dossier=dossier)
+            .exclude(commentaire_agent="")
+            .select_related("champ")
+        )
+        return [
+            {
+                "champ": v.champ.nom,
+                "code": v.champ.code,
+                "commentaire_agent": v.commentaire_agent,
+            }
+            for v in valeurs
+        ]
 
 
 class DossierProprietaireMixin:
@@ -84,16 +130,24 @@ class DossierProprietaireMixin:
         Un dossier est éditable dans deux cas : BROUILLON (première
         saisie) et REJETE (corrections demandées par l'agent, UC12).
 
+        Le message nomme le statut ACTUEL en clair (« Validé », « En
+        instruction »…) : l'utilisateur comprend pourquoi l'action est
+        refusée au lieu d'un code technique du type « statut différent
+        de BROUILLON/REJETE » qui ne dit rien de SON dossier.
+
         Utilisation : `if conflit := self.verifier_dossier_modifiable(dossier): return conflit`
         """
         if dossier.statut not in (
             Dossier.Statut.BROUILLON,
             Dossier.Statut.REJETE,
         ):
-            return Response(
-                {
-                    "detail": "Ce dossier n'est plus modifiable (statut différent de BROUILLON/REJETE).",
-                },
-                status=status.HTTP_409_CONFLICT,
+            return erreur(
+                "DOSSIER_NON_MODIFIABLE",
+                (
+                    f"Ce dossier n'est plus modifiable : il est actuellement "
+                    f"« {dossier.get_statut_display()} »."
+                ),
+                status.HTTP_409_CONFLICT,
+                statut_actuel=dossier.statut,
             )
         return None

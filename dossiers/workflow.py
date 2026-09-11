@@ -21,7 +21,7 @@ logger = logging.getLogger("pgnoc.dossiers")
 from audit.services import journaliser
 from audit.models import JournalAudit
 from dossiers.models import Dossier
-from dossiers.services import calculer_progression_pct
+from dossiers.services import calculer_progression_pct, champs_manquants
 from notifications.tasks import (
     notifier_transition_task,
     envoyer_email_dossier_soumis,
@@ -34,7 +34,8 @@ TRANSITIONS = {
     Dossier.Statut.SOUMIS: {Dossier.Statut.EN_INSTRUCTION},
     Dossier.Statut.EN_INSTRUCTION: {Dossier.Statut.VALIDE, Dossier.Statut.REJETE},
     Dossier.Statut.REJETE: {Dossier.Statut.SOUMIS},
-    Dossier.Statut.VALIDE: set(),  # état terminal : aucun retour possible
+    Dossier.Statut.VALIDE: {Dossier.Statut.ACTIF},  # ouverture du compte (post-validation)
+    Dossier.Statut.ACTIF: set(),  # état terminal définitif
 }
 
 
@@ -124,6 +125,17 @@ def _appliquer_transition(dossier,
     avant = _snapshot(dossier)
 
     if nouveau_statut == Dossier.Statut.SOUMIS:
+        # Résoumission après rejet : l'investisseur corrige puis relance la
+        # soumission SANS nouvelle signature (il a déjà signé une fois).
+        # On re-scelle ici la preuve du contenu CORRIGÉ avant les
+        # vérifications — la preuve d'origine a été purgée au rejet car
+        # elle couvrait l'ancien contenu.
+        if dossier.statut == Dossier.Statut.REJETE and not (
+            dossier.type_signature and dossier.donnee_signature and dossier.date_signature
+        ):
+            from dossiers.services import poser_signature_resoumission
+            poser_signature_resoumission(dossier, requete)
+
         _verifier_avant_soumission(dossier)
         dossier.date_soumission = timezone.now()
         dossier.etape_courante = None
@@ -135,9 +147,8 @@ def _appliquer_transition(dossier,
             # Resoumission après rejet : nouvelle version, l'ancien agent
             # est libéré, l'historique de décision et le motif d'ancien
             # rejet sont remis à zéro (le dossier resoumis ne doit plus
-            # afficher l'ancien motif). La signature, elle, a déjà été
-            # purgée AU REJET : l'investisseur a forcément re-signé le
-            # contenu corrigé avant d'arriver ici (précondition ci-dessus).
+            # afficher l'ancien motif). La preuve du contenu corrigé a
+            # déjà été re-scellée automatiquement ci-dessus (signé une fois).
             dossier.version += 1
             dossier.agent = None
             dossier.date_instruction = None
@@ -167,6 +178,10 @@ def _appliquer_transition(dossier,
                   "dossier : les données ont été modifiées après signature.")
             )
         dossier.date_decision = timezone.now()
+        # Post-validation : si la SGI exige un dépôt minimum, le dépôt
+        # en attente est créé dans la même transaction (l'état figé étant
+        # VALIDE, le passage à ACTIF attendra l'approbation de la preuve).
+        _creer_depot_minimum_si_exige(dossier)
 
     elif nouveau_statut == Dossier.Statut.REJETE:
         _verifier_decision(dossier, agent)
@@ -176,13 +191,17 @@ def _appliquer_transition(dossier,
         dossier.date_decision = timezone.now()
         # Le rejet invalide le contenu signé : la preuve couvrait les
         # valeurs de la version soumise, que l'investisseur va corriger.
-        # On la purge immédiatement — la resoumission exigera une
-        # nouvelle signature du contenu corrigé (UC17), jamais la
-        # réutilisation de l'acceptation d'une version antérieure.
+        # On la purge immédiatement — la résoumission re-scelle alors
+        # automatiquement la preuve du contenu corrigé (choix produit :
+        # l'investisseur n'a pas à re-signer après un rejet).
         dossier.type_signature = ""
         dossier.donnee_signature = ""
         dossier.date_signature = None
         dossier.ip_signature = None
+
+    elif nouveau_statut == Dossier.Statut.ACTIF:
+        # Ouverture du compte-titres (post-validation).
+        _verifier_activation(dossier, agent)
 
     dossier.statut = nouveau_statut
     dossier.save(update_fields=champs_effectivement_modifies(dossier))
@@ -263,9 +282,21 @@ def _verifier_avant_soumission(dossier):
         l'investisseur doit l'avoir acceptée avant soumission. Tant
         qu'aucune convention n'est publiée, aucun accord n'est exigé.
     """
-    if calculer_progression_pct(dossier) < 100:
+    manquants = champs_manquants(dossier)
+    if manquants:
+        # UX : on nomme les champs qui bloquent (les 5 premiers) plutôt
+        # qu'un « dossier incomplet » générique — l'investisseur sait
+        # immédiatement quoi corriger.
+        noms = [m["champ"] for m in manquants]
+        liste = ", ".join(f"« {nom} »" for nom in noms[:5])
+        if len(noms) > 5:
+            liste += ", …"
         raise ValidationError(
-            _("Le dossier ne peut être soumis : des champs obligatoires restent à renseigner.")
+            _(
+                "Le dossier ne peut être soumis : %(nb)d champ(s) "
+                "obligatoire(s) restent à renseigner (%(liste)s)."
+            )
+            % {"nb": len(manquants), "liste": liste}
         )
 
     if not (dossier.type_signature and dossier.donnee_signature and dossier.date_signature):
@@ -323,3 +354,95 @@ def _verifier_decision(dossier, agent):
         raise ValidationError(
             _("Seul l'agent qui a pris en charge le dossier peut rendre la décision.")
         )
+
+
+def _creer_depot_minimum_si_exige(dossier):
+    """Crée un dépôt minimum EN_ATTENTE au moment de la validation du dossier.
+
+    Si et seulement si la SGI a activé l'exigence (`ConfigDepotMinimum`),
+    le dépôt est crée dans la transaction de validation avec le montant
+    et les instructions FIGÉS de la config courante. Montant et consigne
+    ne changent donc jamais pour un dossier déjà validé, même si la SGI
+    ajuste sa config ensuite.
+
+    Pas d'effet si le dépôt existe déjà (cas d'une revalidation après
+    rejet, le dépôt d'origine est conservé).
+    """
+    from dossiers.models import DepotMinimum
+
+    try:
+        config = dossier.sgi.config_depot
+    except Exception:
+        return
+    if not config.est_exigee():
+        return
+    DepotMinimum.objects.get_or_create(
+        dossier=dossier,
+        defaults={
+            "montant_requis": config.montant_depot_min,
+            "instructions": config.instructions,
+            "methodes_acceptees": config.methodes_acceptees,
+        },
+    )
+
+
+def _verifier_activation(dossier, agent):
+    """Ouverture du compte-titres : le personnel SGI active un dossier VALIDE.
+
+    Règles :
+      - le dossier doit être VALIDE (transition contrôlée par `TRANSITIONS`) ;
+      - l'agent doit appartenir à la même SGI que le dossier
+        (reprend `_verifier_decision` : l'agent instruit, l'admin SGI de
+        la même SGI supervise) ;
+      - si la SGI exige un dépôt minimum, l'activation est impossible
+        tant que la preuve n'a pas été approuvée : tout autre chemin
+        (activer sans dépôt, activer malgré une preuve en attente) est
+        refusé.
+    """
+    from dossiers.models import DepotMinimum
+
+    if agent is None:
+        raise ValidationError(_("Un agent SGI doit être désigné pour activer le compte."))
+    if agent.sgi_id != dossier.sgi_id:
+        raise ValidationError(_("Cet agent n'appartient pas à la SGI destinataire du dossier."))
+
+    try:
+        config = dossier.sgi.config_depot
+    except Exception:
+        config = None
+
+    if config is not None and config.est_exigee():
+        depot = getattr(dossier, "depot_minimum", None)
+        if depot is None or depot.statut != DepotMinimum.Statut.APPROUVE:
+            raise ValidationError(
+                _("Le dépôt minimum exigé par la SGI doit être approuvé "
+                  "avant l'ouverture du compte-titres.")
+            )
+
+
+def _servir_depot(dossier):
+    """Renvoie le dépôt du dossier, créé si besoin (vue investisseur).
+
+    L'investisseur consulte son dépôt dès que son dossier est VALIDE :
+    on matérialise l'exigence au premier accès si elle est active.
+    Retourne (dépôt, créé_ou_pas).
+    """
+    from dossiers.models import DepotMinimum
+
+    try:
+        config = dossier.sgi.config_depot
+    except Exception:
+        config = None
+
+    if config is None or not config.est_exigee():
+        return None, False
+
+    depot, cree = DepotMinimum.objects.get_or_create(
+        dossier=dossier,
+        defaults={
+            "montant_requis": config.montant_depot_min,
+            "instructions": config.instructions,
+            "methodes_acceptees": config.methodes_acceptees,
+        },
+    )
+    return depot, cree

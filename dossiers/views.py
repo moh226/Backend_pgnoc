@@ -24,10 +24,11 @@ from dossiers.mixins import ChampCorrigeableMixin, DossierProprietaireMixin
 from dossiers.models import ChampKYC, Dossier, EtapeKYC, ValeurChamp
 from dossiers.permissions import PeutAccederAuDossier
 from dossiers.services import (
-    generer_code_otp, poser_signature_otp, recalculer_progression,
-    signer_preuve_selfie, verifier_preuve_selfie,
+    champs_manquants, generer_code_otp, poser_signature_otp,
+    recalculer_progression, signer_preuve_selfie, verifier_preuve_selfie,
 )
 from dossiers.workflow import transiter
+from pgnoc.erreurs import erreur
 from dossiers.serializers import (
     DossierCreationSerializer, DossierDetailSerializer, DossierListSerializer,
     EtapeKYCSerializer, ValeurChampSerializer, TeleversementFichierSerializer,
@@ -456,7 +457,12 @@ class ValeurChampFichierUrlAPIView(generics.GenericAPIView):
 
         valeur = get_object_or_404(ValeurChamp, pk=valeur_pk, dossier=dossier)
         if not valeur.fichier:
-            return Response({"detail": "Aucun fichier associé à ce champ."}, status=status.HTTP_404_NOT_FOUND)
+            return erreur(
+                "FICHIER_ABSENT",
+                "Aucun fichier n'est encore associé à ce champ.",
+                status.HTTP_404_NOT_FOUND,
+                champ=valeur.champ.nom,
+            )
 
         # Chaque génération d'URL signée ouvre l'accès à un justificatif
         # d'identité : l'accès est tracé (conformité CREPMF).
@@ -505,14 +511,22 @@ class ValeurSelfieAuthenticiteAPIView(generics.GenericAPIView):
 
         valeur = get_object_or_404(ValeurChamp, pk=valeur_pk, dossier=dossier)
         if valeur.champ.type != ChampKYC.TypeChamp.SELFIE:
-            return Response(
-                {"detail": "Ce champ n'est pas un selfie de preuve de vie."},
-                status=status.HTTP_400_BAD_REQUEST,
+            return erreur(
+                "TYPE_CHAMP_INVALIDE",
+                (
+                    f"Le champ « {valeur.champ.nom} » n'est pas un selfie "
+                    "de preuve de vie : la vérification d'authenticité ne "
+                    "s'applique qu'aux selfies."
+                ),
+                status.HTTP_400_BAD_REQUEST,
+                champ=valeur.champ.nom,
             )
         if not valeur.fichier:
-            return Response(
-                {"detail": "Aucun selfie enregistré pour ce champ."},
-                status=status.HTTP_404_NOT_FOUND,
+            return erreur(
+                "SELFIE_ABSENT",
+                "Aucun selfie n'est encore enregistré pour ce champ.",
+                status.HTTP_404_NOT_FOUND,
+                champ=valeur.champ.nom,
             )
 
         return Response(verifier_preuve_selfie(dossier, valeur))
@@ -612,19 +626,28 @@ class DossierAccepterConventionAPIView(DossierProprietaireMixin, generics.Generi
     def post(self, request, dossier_pk):
         dossier = self.get_dossier()
         if dossier.statut not in (Dossier.Statut.BROUILLON, Dossier.Statut.REJETE):
-            return Response(
-                {"detail": "Seul un dossier en BROUILLON ou REJETE peut accepter "
-                           "la convention."},
-                status=status.HTTP_409_CONFLICT,
+            return erreur(
+                "DOSSIER_NON_MODIFIABLE",
+                (
+                    f"La convention ne peut être acceptée que pour un dossier "
+                    f"en brouillon ou rejeté : celui-ci est "
+                    f"« {dossier.get_statut_display()} »."
+                ),
+                status.HTTP_409_CONFLICT,
+                statut_actuel=dossier.statut,
             )
 
         if not (
             hasattr(dossier.sgi, "convention")
             and dossier.sgi.convention.fichier_pdf
         ):
-            return Response(
-                {"detail": "Aucune convention tarifaire publiée par cette SGI."},
-                status=status.HTTP_409_CONFLICT,
+            return erreur(
+                "CONVENTION_ABSENTE",
+                (
+                    "Aucune convention tarifaire n'a encore été publiée par "
+                    f"la SGI {dossier.sgi.nom} : réessayez ultérieurement."
+                ),
+                status.HTTP_409_CONFLICT,
             )
 
         version_actuelle = dossier.sgi.convention.fichier_pdf.name
@@ -677,11 +700,40 @@ class DossierSoumettreAPIView(DossierProprietaireMixin, generics.GenericAPIView)
 
     def post(self, request, dossier_pk):
         dossier = self.get_dossier()
-
         if dossier.statut not in (Dossier.Statut.BROUILLON, Dossier.Statut.REJETE):
-            return Response(
-                {"detail": "Seul un dossier en BROUILLON ou REJETE peut être soumis."},
-                status=status.HTTP_409_CONFLICT,
+            return erreur(
+                "DOSSIER_NON_SOUMETTABLE",
+                (
+                    f"Seul un dossier en brouillon ou rejeté peut être soumis : "
+                    f"celui-ci est « {dossier.get_statut_display()} »."
+                ),
+                status.HTTP_409_CONFLICT,
+                statut_actuel=dossier.statut,
+            )
+
+        # UX : contrôle de complétion AVANT la machine à états, pour
+        # renvoyer une erreur RICHE (liste des champs manquants avec leur
+        # étape) que le frontend transforme en parcours guidé. La
+        # précondition reste revérifiée sous verrou dans `transiter()`
+        # (filet de sécurité concurrentiel, message court).
+        manquants = champs_manquants(dossier)
+        if manquants:
+            noms = [m["champ"] for m in manquants]
+            liste = ", ".join(f"« {nom} »" for nom in noms[:5])
+            if len(noms) > 5:
+                liste += ", …"
+            return erreur(
+                "DOSSIER_INCOMPLET",
+                (
+                    f"Le dossier ne peut pas être soumis : {len(manquants)} "
+                    f"champ{'s' if len(manquants) > 1 else ''} obligatoire"
+                    f"{'s' if len(manquants) > 1 else ''} reste"
+                    f"{'nt' if len(manquants) > 1 else ''} à renseigner "
+                    f"({liste})."
+                ),
+                status.HTTP_400_BAD_REQUEST,
+                champs_manquants=manquants,
+                progression_pct=dossier.progression_pct,
             )
 
         try:

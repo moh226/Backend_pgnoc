@@ -47,7 +47,8 @@ class InscriptionInvestisseurAPITests(APITestCase):
         reponse = self.client.post(self.url, donnees)
 
         self.assertEqual(reponse.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("password_confirmation", reponse.data)
+        # Enveloppe d'erreur unifiée : champ fautif sous `champs`.
+        self.assertIn("password_confirmation", reponse.data["champs"])
 
     def test_inscription_email_deja_utilise(self):
         Utilisateur.objects.create_user("inv@example.com", "S3curise!2026")
@@ -59,7 +60,8 @@ class InscriptionInvestisseurAPITests(APITestCase):
         reponse = self.client.post(self.url, donnees)
 
         self.assertEqual(reponse.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("email", reponse.data)
+        # Enveloppe d'erreur unifiée : champ fautif sous `champs`.
+        self.assertIn("email", reponse.data["champs"])
 
     def test_inscription_envoie_un_email_de_confirmation(self):
         donnees = {

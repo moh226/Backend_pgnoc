@@ -3,6 +3,7 @@ from rest_framework import serializers
 
 from sgi.models import (
     ActivitePresentation,
+    ConfigDepotMinimum,
     ConventionTarifaire,
     InformationPresentation,
     MembreEquipe,
@@ -89,15 +90,34 @@ class PresentationAdminEntreeSerializer(serializers.Serializer):
     references = _ReferenceSerialisee(many=True, required=False)
 
 
+class ConfigDepotMinimumSerializer(serializers.Serializer):
+    """Entrée/sortie admin de l'exigence de dépôt minimum post-validation.
+
+    En PUT (`ConfigDepotMinimumAdminAPIView`), un payload partiel est
+    admis (spécificité `put` gérée par la vue) ; ici tous les champs
+    sont déclarés pour la documentation OpenAPI.
+    """
+
+    exige_depot = serializers.BooleanField(required=False)
+    montant_depot_min = serializers.DecimalField(
+        max_digits=14, decimal_places=0, min_value=0, required=False
+    )
+    instructions = serializers.CharField(required=False, allow_blank=True)
+    methodes_acceptees = serializers.ListField(
+        child=serializers.CharField(max_length=30), required=False
+    )
+
+
 class SGIFicheSerializer(serializers.ModelSerializer):
     """Fiche complète de la SGI pour l'adhésion (UC01) : présentation + convention."""
 
     presentation = serializers.SerializerMethodField()
     convention = serializers.SerializerMethodField()
+    depot_minimum = serializers.SerializerMethodField()
 
     class Meta:
         model = SGI
-        fields = ("id", "nom", "code_sgi", "logo", "presentation", "convention")
+        fields = ("id", "nom", "code_sgi", "logo", "presentation", "convention", "depot_minimum")
         read_only_fields = fields
 
     @extend_schema_field(PresentationSectionsSerializer)
@@ -122,6 +142,37 @@ class SGIFicheSerializer(serializers.ModelSerializer):
             # l'investisseur fige la version acceptée ; si elle diffère,
             # l'acceptation doit être renouvelée (workflow UC16).
             "version": convention.fichier_pdf.name if convention.fichier_pdf else "",
+        }
+
+    @extend_schema_field(serializers.DictField)
+    def get_depot_minimum(self, sgi) -> dict[str, object]:
+        """Exigence de dépôt post-validation → le montant est connu dès la fiche.
+
+        `methodes_acceptees` présente les codes+libellés (affichage
+        investisseur). La rétrocompatibilité n'est pas un enjeu : sans
+        config, l'exigence est simplement absente.
+        """
+        try:
+            config = sgi.config_depot
+        except ConfigDepotMinimum.DoesNotExist:
+            return {
+                "exige_depot": False,
+                "montant_depot_min": 0,
+                "devise": "FCFA",
+                "instructions": "",
+                "methodes_acceptees": [],
+            }
+        libelles = dict(ConfigDepotMinimum.MethodePaiement.choices)
+        return {
+            "exige_depot": config.exige_depot,
+            "montant_depot_min": config.montant_depot_min,
+            "devise": "FCFA",
+            "instructions": config.instructions,
+            "methodes_acceptees": [
+                {"code": c, "libelle": libelles[c]}
+                for c in config.methodes_acceptees
+                if c in libelles
+            ],
         }
 
 

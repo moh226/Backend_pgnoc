@@ -522,9 +522,9 @@ class CircuitAgentAPITests(APITestCase):
         self.assertEqual(valeur_a.commentaire_agent, "À reformuler")
 
         # Resoumission (1G) : après rejet, la preuve de signature a été
-        # purgée (elle couvrait l'ancien contenu) — l'investisseur
-        # re-signe le contenu corrigé avant de resoumettre.
-        _signer_dossier(self.dossier)
+        # purgée (elle couvrait l'ancien contenu) — la résoumission
+        # re-scelle automatiquement la preuve du contenu corrigé :
+        # l'investisseur n'a pas à re-signer (choix produit).
         url_soumettre = self._url("dossiers:dossier-soumettre")
         self.client.force_authenticate(self.investisseur)
         rep = self.client.post(url_soumettre)
@@ -692,7 +692,7 @@ class CycleCompletAPITests(APITestCase):
         )
         self.assertEqual(rep.status_code, status.HTTP_200_OK)
 
-        # 5. Validation (UC14) → état terminal
+        # 5. Validation (UC14)
         rep = self.client.post(
             reverse("dossiers:dossier-valider", kwargs={"dossier_pk": dossier_pk})
         )
@@ -776,7 +776,8 @@ class MachineAEtatsTests(APITestCase):
                 Dossier.Statut.SOUMIS: {Dossier.Statut.EN_INSTRUCTION},
                 Dossier.Statut.EN_INSTRUCTION: {Dossier.Statut.VALIDE, Dossier.Statut.REJETE},
                 Dossier.Statut.REJETE: {Dossier.Statut.SOUMIS},
-                Dossier.Statut.VALIDE: set(),
+                Dossier.Statut.VALIDE: {Dossier.Statut.ACTIF},
+                Dossier.Statut.ACTIF: set(),
             },
         )
 
@@ -881,9 +882,8 @@ class MachineAEtatsTests(APITestCase):
         transiter(self.dossier, Dossier.Statut.SOUMIS)
         transiter(self.dossier, Dossier.Statut.EN_INSTRUCTION, agent=self.agent)
         transiter(self.dossier, Dossier.Statut.REJETE, agent=self.agent, motif_rejet="Justificatif abimé")
-        # Le rejet a purgé la signature : re-signature obligatoire avant
-        # la resoumission (la preuve doit couvrir le contenu corrigé).
-        _signer_dossier(self.dossier)
+        # Le rejet a purgé la signature ; la résoumission re-scelle la
+        # preuve du contenu corrigé automatiquement (sans re-signature).
         transiter(self.dossier, Dossier.Statut.SOUMIS)
         self.dossier.refresh_from_db()
         self.assertEqual(self.dossier.statut, Dossier.Statut.SOUMIS)

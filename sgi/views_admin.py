@@ -23,8 +23,10 @@ from rest_framework.response import Response
 from audit.models import JournalAudit
 from audit.services import journaliser
 from comptes.permissions import EstAdminSGI
-from sgi.models import ConventionTarifaire, InformationPresentation
+from pgnoc.erreurs import erreur
+from sgi.models import ConfigDepotMinimum, ConventionTarifaire, InformationPresentation
 from sgi.serializers import (
+    ConfigDepotMinimumSerializer,
     PresentationAdminEntreeSerializer,
     PresentationSectionsSerializer,
     sections_de_presentation,
@@ -128,11 +130,13 @@ def _gerer_convention(request):
         "fichier_pdf": ancien,
     }
     if fichier:
-        erreur = _valider_pdf(fichier)
-        if erreur:
-            return Response(
-                {"fichier_pdf": erreur},
-                status=status.HTTP_400_BAD_REQUEST,
+        message_pdf_invalide = _valider_pdf(fichier)
+        if message_pdf_invalide:
+            return erreur(
+                "FICHIER_INVALIDE",
+                f"PDF refusé : {message_pdf_invalide}",
+                status.HTTP_400_BAD_REQUEST,
+                champs={"fichier_pdf": [message_pdf_invalide]},
             )
         chemin = f"sgi/conventions/{sgi_id}/{uuid.uuid4()}.pdf"
         try:
@@ -150,9 +154,13 @@ def _gerer_convention(request):
                 convention.save(update_fields=["titre", "fichier_pdf", "date_modification"])
         except IntegrityError:
             logger.warning("IntegrityError lors de la mise à jour de la convention SGI=%s", sgi_id)
-            return Response(
-                {"detail": "Erreur de cohérence lors de la mise à jour."},
-                status=status.HTTP_409_CONFLICT,
+            return erreur(
+                "CONFLIT_MISE_A_JOUR",
+                (
+                    "La convention a été modifiée par ailleurs pendant votre "
+                    "mise à jour : rechargez-la puis réessayez."
+                ),
+                status.HTTP_409_CONFLICT,
             )
     else:
         nouveau_titre = request.data.get("titre")
@@ -373,3 +381,174 @@ class AdminSGIDashboardAPIView(generics.GenericAPIView):
             "convention_publiee": convention_publiee,
             "presentation_renseignee": presentation_renseignee,
         })
+
+
+# ---------------------------------------------------------------------------
+# Exigence de dépôt minimum post-validation (configuration SGI)
+# ---------------------------------------------------------------------------
+
+
+def _serialiser_config_depot(config):
+    """Sortie de la config dépôt (admin SGI), avec libellés des méthodes."""
+    libelles = dict(ConfigDepotMinimum.MethodePaiement.choices)
+    return {
+        "exige_depot": config.exige_depot,
+        "montant_depot_min": config.montant_depot_min,
+        "devise": "FCFA",
+        "instructions": config.instructions,
+        "methodes_acceptees": [
+            {"code": c, "libelle": libelles[c]}
+            for c in config.methodes_acceptees
+            if c in libelles
+        ],
+        "date_modification": config.date_modification,
+    }
+
+
+class ConfigDepotMinimumAdminAPIView(generics.GenericAPIView):
+    """Publication de l'exigence de dépôt minimum (Admin SGI, UC post-validation).
+
+    GET /api/sgi/admin/depot/
+    PUT /api/sgi/admin/depot/
+
+    Cloisonnée à la SGI déduite du compte (jamais fournie par le client).
+    Incohérences refusées : un dépôt exigé doit avoir un montant positif
+    et au moins une méthode de paiement acceptée.
+    """
+
+    permission_classes = (permissions.IsAuthenticated, EstAdminSGI)
+    serializer_class = ConfigDepotMinimumSerializer
+
+    @extend_schema(responses={200: inline_serializer(
+        "ConfigDepotMinimumSortie",
+        {
+            "exige_depot": serializers.BooleanField(),
+            "montant_depot_min": serializers.DecimalField(max_digits=14, decimal_places=0),
+            "devise": serializers.CharField(),
+            "instructions": serializers.CharField(),
+            "methodes_acceptees": inline_serializer(
+                "MethodePaiement",
+                {
+                    "code": serializers.CharField(),
+                    "libelle": serializers.CharField(),
+                },
+                many=True,
+            ),
+            "date_modification": serializers.DateTimeField(),
+        },
+    )})
+    def get(self, request):
+        try:
+            config = request.user.sgi.config_depot
+        except ConfigDepotMinimum.DoesNotExist:
+            return Response({
+                "exige_depot": False,
+                "montant_depot_min": 0,
+                "devise": "FCFA",
+                "instructions": "",
+                "methodes_acceptees": [],
+                "date_modification": None,
+            })
+        return Response(_serialiser_config_depot(config))
+
+    @extend_schema(
+        request=ConfigDepotMinimumSerializer,
+        responses={200: inline_serializer(
+            "ConfigDepotMinimumSortie",
+            {
+                "exige_depot": serializers.BooleanField(),
+                "montant_depot_min": serializers.DecimalField(max_digits=14, decimal_places=0),
+                "devise": serializers.CharField(),
+                "instructions": serializers.CharField(),
+                "methodes_acceptees": inline_serializer(
+                    "MethodePaiement",
+                    {
+                        "code": serializers.CharField(),
+                        "libelle": serializers.CharField(),
+                    },
+                    many=True,
+                ),
+                "date_modification": serializers.DateTimeField(),
+            },
+        )},
+    )
+    def put(self, request):
+        sgi = request.user.sgi
+        sgi_id = sgi.id
+
+        serializer = ConfigDepotMinimumSerializer(
+            data=request.data,
+            partial=True,
+        )
+        serializer.is_valid(raise_exception=True)
+        donnees = serializer.validated_data
+
+        # Validation métier (au-delà du typage).
+        exige = donnees.get("exige_depot", False)
+        montant = donnees.get("montant_depot_min")
+        if exige and (montant is None or montant <= 0):
+            return erreur(
+                "CONFIG_DEPOT_INVALIDE",
+                "Un dépôt exigé doit avoir un montant minimum positif.",
+                status.HTTP_400_BAD_REQUEST,
+                champs={"montant_depot_min": [
+                    "Indiquez un montant strictement positif."
+                ]},
+            )
+        methodes = donnees.get("methodes_acceptees")
+        codes_valides = {c for c, _ in ConfigDepotMinimum.MethodePaiement.choices}
+        if methodes is not None or exige:
+            liste = methodes if methodes is not None else []
+            for code in liste:
+                if code not in codes_valides:
+                    return erreur(
+                        "CONFIG_DEPOT_INVALIDE",
+                        f"Méthode de paiement inconnue : « {code} ».",
+                        status.HTTP_400_BAD_REQUEST,
+                        champs={"methodes_acceptees": [
+                            f"Méthode inconnue : {code}."
+                        ]},
+                    )
+            if exige and not liste:
+                return erreur(
+                    "CONFIG_DEPOT_INVALIDE",
+                    (
+                        "Un dépôt exigé doit accepter au moins une méthode "
+                        "de paiement."
+                    ),
+                    status.HTTP_400_BAD_REQUEST,
+                    champs={"methodes_acceptees": [
+                        "Sélectionnez au moins une méthode de paiement."
+                    ]},
+                )
+
+        config, cree = _obtenir_ou_creer(
+            ConfigDepotMinimum,
+            sgi=sgi,
+            defaults={
+                "exige_depot": False,
+                "montant_depot_min": 0,
+                "instructions": "",
+                "methodes_acceptees": [],
+            },
+        )
+
+        for champ, valeur in donnees.items():
+            setattr(config, champ, valeur)
+        config.save()
+
+        journaliser(
+            request.user,
+            JournalAudit.Action.CREATION_DEPOT if cree else JournalAudit.Action.MODIFICATION_DEPOT,
+            "ConfigDepotMinimum",
+            str(config.pk),
+            apres={
+                "sgi": str(sgi_id),
+                "exige_depot": config.exige_depot,
+                "montant_depot_min": str(config.montant_depot_min),
+            },
+            requete=request,
+        )
+
+        config.refresh_from_db()
+        return Response(_serialiser_config_depot(config), status=status.HTTP_200_OK)

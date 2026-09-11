@@ -81,6 +81,13 @@ def _creer_notifications_transition(dossier, nouveau_statut):
             f"Motif : {dossier.motif_rejet} — corrigez les champs signalés "
             f"puis resoumettez-le."
         )
+    elif nouveau_statut == _Dossier.Statut.ACTIF:
+        cibles = [dossier.utilisateur]
+        titre = "Compte activé"
+        message = (
+            f"Félicitations, votre dossier {dossier.reference} a été activé : "
+            f"votre compte-titres est ouvert."
+        )
     else:
         return
 
@@ -335,5 +342,157 @@ def envoyer_email_code_otp(dossier_pk, code):
             "code": code,
             "minutes_validite": 5,
             "annee": timezone.now().year,
+        },
+    )
+
+
+# ─────────────────────────────────────────────────────────────
+# Dépôt minimum post-validation (preuve + vérification)
+# ─────────────────────────────────────────────────────────────
+
+
+@shared_task(ignore_result=True)
+def notifier_depot_preuve_deposee_task(depot_pk):
+    """Notifie les agents/administrateurs SGI d'une preuve de dépôt à vérifier."""
+    from dossiers.models import DepotMinimum
+
+    try:
+        depot = DepotMinimum.objects.select_related(
+            "dossier__utilisateur", "dossier__sgi"
+        ).get(pk=depot_pk)
+    except DepotMinimum.DoesNotExist:
+        logger.warning("Dépôt %s introuvable — notification ignorée.", depot_pk)
+        return
+
+    cibles = Utilisateur.objects.filter(
+        sgi_id=depot.dossier.sgi_id,
+        role__code__in=(Role.Code.AGENT_SGI, Role.Code.ADMIN_SGI),
+        is_active=True,
+    )
+    notifications = [
+        Notification(
+            utilisateur=cible,
+            titre="Preuve de dépôt à vérifier",
+            message=(
+                f"L'investisseur de {depot.dossier.reference} a déposé sa preuve "
+                f"de dépôt de {depot.montant_depose} FCFA. Vérifiez-la."
+            ),
+            type_notif=Notification.TypeNotif.DOSSIER,
+        )
+        for cible in cibles
+    ]
+    if notifications:
+        with transaction.atomic():
+            Notification.objects.bulk_create(notifications)
+
+
+@shared_task(ignore_result=True)
+def notifier_depot_verifie_task(depot_pk, approuve):
+    """Notifie l'investisseur de l'issue de la vérification de sa preuve."""
+    from dossiers.models import DepotMinimum
+
+    try:
+        depot = DepotMinimum.objects.select_related("dossier__utilisateur").get(pk=depot_pk)
+    except DepotMinimum.DoesNotExist:
+        logger.warning("Dépôt %s introuvable — notification ignorée.", depot_pk)
+        return
+
+    if approuve:
+        titre = "Preuve de dépôt approuvée"
+        message = (
+            f"Votre preuve de dépôt pour {depot.dossier.reference} a été approuvée : "
+            f"votre compte-titres est activé."
+        )
+    else:
+        titre = "Preuve de dépôt rejetée"
+        message = (
+            f"Votre preuve de dépôt pour {depot.dossier.reference} a été rejetée. "
+            f"Motif : {depot.commentaire_agent or '—'} — déposez une nouvelle preuve."
+        )
+
+    Notification.objects.create(
+        utilisateur=depot.dossier.utilisateur,
+        titre=titre,
+        message=message,
+        type_notif=Notification.TypeNotif.DOSSIER,
+    )
+
+
+@shared_task(ignore_result=True, autoretry_for=(Exception,), retry_backoff=60, max_retries=3)
+def envoyer_email_depot_preuve_deposee(depot_pk):
+    """Email aux agents/admin SGI : une preuve de dépôt attend vérification."""
+    from dossiers.models import DepotMinimum
+
+    try:
+        depot = DepotMinimum.objects.select_related(
+            "dossier__utilisateur", "dossier__sgi"
+        ).get(pk=depot_pk)
+    except DepotMinimum.DoesNotExist:
+        return
+
+    cibles = list(
+        Utilisateur.objects.filter(
+            sgi_id=depot.dossier.sgi_id,
+            role__code__in=(Role.Code.AGENT_SGI, Role.Code.ADMIN_SGI),
+            is_active=True,
+        ).values_list("email", flat=True)
+    )
+    if not cibles:
+        return
+
+    try:
+        from sgi.models import ConfigDepotMinimum
+        methode_libelle = dict(ConfigDepotMinimum.MethodePaiement.choices).get(
+            depot.methode_paiement, depot.methode_paiement
+        )
+    except Exception:
+        methode_libelle = depot.methode_paiement or ""
+
+    _envoyer_email(
+        "emails/depot_preuve_deposee.html",
+        f"Preuve de dépôt à vérifier — {depot.dossier.reference}",
+        cibles,
+        {
+            "reference": depot.dossier.reference,
+            "investisseur_email": depot.dossier.utilisateur.email,
+            "sgi_nom": depot.dossier.sgi.nom,
+            "montant_depose": depot.montant_depose,
+            "methode_paiement": methode_libelle,
+            "reference_transaction": depot.reference_transaction,
+        },
+    )
+
+
+@shared_task(ignore_result=True, autoretry_for=(Exception,), retry_backoff=60, max_retries=3)
+def envoyer_email_depot_verifie(depot_pk, approuve):
+    """Email à l'investisseur sur l'issue de la vérification de sa preuve."""
+    from dossiers.models import DepotMinimum
+
+    try:
+        depot = DepotMinimum.objects.select_related(
+            "dossier__utilisateur", "dossier__sgi"
+        ).get(pk=depot_pk)
+    except DepotMinimum.DoesNotExist:
+        return
+
+    if approuve:
+        template = "emails/depot_approuve.html"
+        sujet = f"Preuve de dépôt approuvée — {depot.dossier.reference}"
+    else:
+        template = "emails/depot_rejete.html"
+        sujet = f"Preuve de dépôt rejetée — {depot.dossier.reference}"
+
+    _envoyer_email(
+        template,
+        sujet,
+        [depot.dossier.utilisateur.email],
+        {
+            "prenom": depot.dossier.utilisateur.prenom,
+            "email": depot.dossier.utilisateur.email,
+            "reference": depot.dossier.reference,
+            "sgi_nom": depot.dossier.sgi.nom,
+            "montant_depose": depot.montant_depose,
+            "commentaire_agent": depot.commentaire_agent or "",
+            "url_dossier": f"{settings.FRONTEND_URL}/espace-investisseur/dossiers/{depot.dossier.pk}",
         },
     )

@@ -46,12 +46,12 @@ class ValeurChampSerializer(serializers.ModelSerializer):
         fields = (
             "id", "champ", "valeur", "fichier",
             "empreinte_sha256", "signature_serveur", "date_capture",
-            "commentaire_agent", "est_corrige", "date_maj",
+            "commentaire_agent", "est_corrige", "date_creation", "date_maj",
         )
         read_only_fields = (
             "id", "fichier",
             "empreinte_sha256", "signature_serveur", "date_capture",
-            "commentaire_agent", "est_corrige", "date_maj",
+            "commentaire_agent", "est_corrige", "date_creation", "date_maj",
         )
 
     def validate_champ(self, champ):

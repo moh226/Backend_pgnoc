@@ -172,7 +172,8 @@ class ChangerMotDePasseAPITests(APITestCase):
         )
 
         self.assertEqual(reponse.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("ancien_mot_de_passe", reponse.data)
+        # Enveloppe d'erreur unifiée : champ fautif sous `champs`.
+        self.assertIn("ancien_mot_de_passe", reponse.data["champs"])
         self.utilisateur.refresh_from_db()
         self.assertTrue(self.utilisateur.check_password("S3curise!2026"))
 
@@ -190,7 +191,8 @@ class ChangerMotDePasseAPITests(APITestCase):
         )
 
         self.assertEqual(reponse.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("confirmation", reponse.data)
+        # Enveloppe d'erreur unifiée : champ fautif sous `champs`.
+        self.assertIn("confirmation", reponse.data["champs"])
 
     def test_changement_reussi_et_tokens_revoques(self):
         self.client.force_authenticate(self.utilisateur)

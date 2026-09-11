@@ -106,7 +106,8 @@ class ValidationFichierConventionTests(APITestCase):
         )
 
         self.assertEqual(reponse.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("fichier_pdf", reponse.data)
+        # Enveloppe d'erreur unifiée : l'erreur de champ est sous `champs`.
+        self.assertIn("fichier_pdf", reponse.data["champs"])
         self.assertFalse(
             ConventionTarifaire.objects.get(sgi=self.sgi).fichier_pdf
         )
@@ -136,7 +137,7 @@ class ValidationFichierConventionTests(APITestCase):
             )
 
         self.assertEqual(reponse.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("volumineux", reponse.data["fichier_pdf"])
+        self.assertIn("volumineux", reponse.data["champs"]["fichier_pdf"][0])
 
 
 class ObtenirOuCreerTolereLaCourseTests(TestCase):

@@ -60,6 +60,12 @@ class JournalAudit(models.Model):
         GENERATION_URL_FICHIER = "GENERATION_URL_FICHIER", _("Génération d'une URL de justificatif")
         EXPORT_JOURNAL = "EXPORT_JOURNAL", _("Export du journal d'audit")
         TRANSFERT_DOSSIER = "TRANSFERT_DOSSIER", _("Transfert de dossier à un agent")
+        CREATION_DEPOT = "CREATION_DEPOT", _("Exigence de dépôt minimum créée")
+        MODIFICATION_DEPOT = "MODIFICATION_DEPOT", _("Exigence de dépôt minimum modifiée")
+        DEPOT_PREUVE_DEPOSEE = "DEPOT_PREUVE_DEPOSEE", _("Preuve de dépôt soumise")
+        DEPOT_APPROUVE = "DEPOT_APPROUVE", _("Dépôt approuvé")
+        DEPOT_REJETE = "DEPOT_REJETE", _("Dépôt rejeté")
+        ACTIVATION_COMPTE = "ACTIVATION_COMPTE", _("Ouverture du compte-titres (dossier ACTIF)")
 
     id = models.UUIDField(
         primary_key=True, default=uuid.uuid4, editable=False,

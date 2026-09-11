@@ -12,8 +12,12 @@ from dossiers.views import (
     ValeurSelfieAuthenticiteAPIView,
 )
 from dossiers.views_agent import (
-    DossierPrendreEnChargeAPIView, DossierValiderAPIView, DossierRejeterAPIView,
-    ValeurChampCommenterAPIView, DossierTransfererAPIView,
+    DossierActiverAPIView, DossierPrendreEnChargeAPIView, DossierValiderAPIView,
+    DossierRejeterAPIView, ValeurChampCommenterAPIView, DossierTransfererAPIView,
+)
+from dossiers.views_depot import (
+    DepotDetailAgentAPIView, DepotListeAgentAPIView,
+    DepotMinimumInvestisseurAPIView, DepotVerifierAgentAPIView,
 )
 from dossiers.views_kyc_admin import (
     ChampKYCListCreateAPIView, ChampKYCRetrieveUpdateDestroyAPIView,
@@ -86,6 +90,31 @@ urlpatterns = [
     path("dossiers/<uuid:dossier_pk>/transferer/",
          DossierTransfererAPIView.as_view(),
          name="dossier-transferer",
+         ),
+
+    path("dossiers/<uuid:dossier_pk>/activer/",
+         DossierActiverAPIView.as_view(),
+         name="dossier-activer",
+         ),
+
+    path("dossiers/<uuid:dossier_pk>/depot-minimum/",
+         DepotMinimumInvestisseurAPIView.as_view(),
+         name="dossier-depot-minimum",
+         ),
+
+    path("depots/",
+         DepotListeAgentAPIView.as_view(),
+         name="depot-liste",
+         ),
+
+    path("depots/<uuid:pk>/",
+         DepotDetailAgentAPIView.as_view(),
+         name="depot-detail",
+         ),
+
+    path("depots/<uuid:pk>/verifier/",
+         DepotVerifierAgentAPIView.as_view(),
+         name="depot-verifier",
          ),
 
     path(

@@ -128,6 +128,73 @@ class ConventionTarifaire(models.Model):
         return bool(self.fichier_pdf)
 
 
+class ConfigDepotMinimum(models.Model):
+    """Exigence de dépôt minimum post-validation définie par une SGI.
+
+    Relation OneToOne/composition avec la SGI (même motif que
+    `ConventionTarifaire`) : une SGI, une exigence — supprimée avec elle.
+
+    Tant que `exige_depot` est faux, aucun dépôt n'est demandé aux
+    investisseurs : le dossier validé peut être activé directement par
+    le personnel SGI. Dès que l'exigence est activée, TOUT dossier
+    VALIDE de la SGI doit faire l'objet d'un `DepotMinimum` approuvé
+    avant de passer au statut ACTIF (compte-titres ouvert).
+    """
+
+    class MethodePaiement(models.TextChoices):
+        ORANGE_MONEY = "ORANGE_MONEY", _("Orange Money")
+        MOOV_MONEY = "MOOV_MONEY", _("Moov Money")
+        WAVE = "WAVE", _("Wave")
+        MTN_MONEY = "MTN_MONEY", _("MTN Mobile Money")
+        VIREMENT = "VIREMENT", _("Virement bancaire")
+        ESPECES = "ESPECES", _("Espèces en agence")
+
+    id = models.UUIDField(
+        primary_key=True, default=uuid.uuid4, editable=False,
+        verbose_name=_("Identifiant"),
+    )
+    sgi = models.OneToOneField(
+        SGI, verbose_name=_("SGI"), related_name="config_depot",
+        on_delete=models.CASCADE,
+    )
+    exige_depot = models.BooleanField(
+        _("Dépôt exigé"),
+        default=False,
+        help_text=_(
+            "Active l'obligation de dépôt minimum après validation : "
+            "le dossier ne devient ACTIF qu'après approbation de la preuve."
+        ),
+    )
+    montant_depot_min = models.DecimalField(
+        _("Montant minimum (FCFA)"),
+        max_digits=14, decimal_places=0,
+        default=0,
+        help_text=_("Montant en francs CFA exigé. Ignoré si le dépôt n'est pas exigé."),
+    )
+    instructions = models.TextField(
+        _("Instructions de paiement"),
+        blank=True,
+        help_text=_("Modalités affichées à l'investisseur (numéro, procédure…)."),
+    )
+    methodes_acceptees = models.JSONField(
+        _("Méthodes acceptées"),
+        default=list,
+        help_text=_("Liste des codes `MethodePaiement` acceptés (ex: [\"ORANGE_MONEY\", \"WAVE\"])."),
+    )
+    date_modification = models.DateTimeField(_("Date de modification"), auto_now=True)
+
+    class Meta:
+        verbose_name = _("Configuration de dépôt minimum")
+        verbose_name_plural = _("Configurations de dépôt minimum")
+
+    def __str__(self):
+        return f"Dépôt {self.sgi.nom} : {self.montant_depot_min} FCFA" if self.exige_depot else f"Dépôt {self.sgi.nom} : non exigé"
+
+    def est_exigee(self):
+        """Le dépôt est exigé ET correctement configuré."""
+        return self.exige_depot and self.montant_depot_min > 0
+
+
 class InformationPresentation(models.Model):
     """Présentation commerciale (contenu marketing) d'une SGI (UC16).
 

@@ -51,6 +51,18 @@ ALLOWED_HOSTS = config("DJANGO_ALLOWED_HOSTS", default="", cast=Csv())
 if DEBUG and not ALLOWED_HOSTS:
     ALLOWED_HOSTS = ["localhost", "127.0.0.1"]
 
+# En dev, autoriser automatiquement les adresses de la machine (accès
+# depuis un appareil du même réseau, WebView Capacitor…) même quand la
+# variable DJANGO_ALLOWED_HOSTS du .env est renseignée.
+if DEBUG:
+    try:
+        import socket
+
+        _, _, adresses = socket.gethostbyname_ex(socket.gethostname())
+        ALLOWED_HOSTS += [a for a in adresses if not a.startswith("127.")]
+    except OSError:
+        pass
+
 
 # ─────────────────────────────────────────────────────────────
 # actif hors mode debug, càd en production
@@ -104,6 +116,10 @@ if DEBUG and not CORS_ALLOWED_ORIGINS:
         "http://127.0.0.1:3000",
         "http://localhost:5173",
         "http://127.0.0.1:5173",
+        # WebView Capacitor (application mobile) : l'app mobile appelle l'API
+        # depuis son origine embarquée https://localhost (Android).
+        "http://localhost",
+        "https://localhost",
     ]
 
 # Autorise l'envoi des cookies / en-têtes d'authentification depuis le
@@ -238,6 +254,11 @@ AWS_ACCESS_KEY_ID = config("MINIO_ACCESS_KEY", default="")
 AWS_SECRET_ACCESS_KEY = config("MINIO_SECRET_KEY", default="")
 AWS_STORAGE_BUCKET_NAME = config("MINIO_BUCKET_NAME", default="pgnoc-ti-documents")
 AWS_S3_ENDPOINT_URL = MINIO_ENDPOINT_URL
+# URL publique pour la génération des URLs signées (ex: https://minio.mondomaine.com
+# ou http://localhost:9000 en dev). Si non défini, fallback sur MINIO_ENDPOINT_URL.
+# Permet de générer des URLs signées accessibles depuis le navigateur
+# même si MINIO_ENDPOINT_URL est un hostname interne (ex: minio:9000).
+AWS_S3_CUSTOM_DOMAIN = config("MINIO_PUBLIC_URL", default=MINIO_ENDPOINT_URL)
 AWS_S3_USE_SSL = config("MINIO_USE_SSL", default=False, cast=bool)
 AWS_DEFAULT_ACL = None  # PAS de fichier public par défaut
 AWS_QUERYSTRING_AUTH = True  # essentiel : force les URLs signées
@@ -314,6 +335,12 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": (
         "rest_framework.permissions.IsAuthenticated",
     ),
+
+    # Toute erreur (validation, 401/403/404, throttle, bug…) sort dans
+    # une enveloppe unifiée {code, message, detail, champs} en français :
+    # le frontend affiche `message` tel quel et branche sa logique sur
+    # `code` (voir pgnoc/erreurs.py).
+    "EXCEPTION_HANDLER": "pgnoc.erreurs.handler_erreurs",
 
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
 

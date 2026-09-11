@@ -30,6 +30,7 @@ from notifications.tasks import (
     notifier_commentaire_agent_task,
     envoyer_email_demande_correction,
 )
+from pgnoc.erreurs import erreur
 
 
 def _recuperer_dossier_autorise(request, view, dossier_pk):
@@ -40,6 +41,25 @@ def _recuperer_dossier_autorise(request, view, dossier_pk):
             request, message="Vous n'avez pas accès à ce dossier."
         )
     return dossier
+
+
+def _statut_incompatible(dossier, action, statut_attendu):
+    """Erreur 409 standard : l'action est refusable selon le statut ACTUEL.
+
+    Le message nomme le statut réel du dossier et l'état attendu :
+    l'agent comprend immédiatement pourquoi l'action échoue (ex : le
+    dossier a déjà été pris en charge par un collègue entre-temps).
+    """
+    return erreur(
+        "STATUT_INCOMPATIBLE",
+        (
+            f"Impossible de {action} : ce dossier est actuellement "
+            f"« {dossier.get_statut_display()} » "
+            f"(cette action s'applique à un dossier {statut_attendu})."
+        ),
+        status.HTTP_409_CONFLICT,
+        statut_actuel=dossier.statut,
+    )
 
 
 class DossierPrendreEnChargeAPIView(generics.GenericAPIView):
@@ -55,9 +75,8 @@ class DossierPrendreEnChargeAPIView(generics.GenericAPIView):
         dossier = _recuperer_dossier_autorise(request, self, dossier_pk)
 
         if dossier.statut != Dossier.Statut.SOUMIS:
-            return Response(
-                {"detail": "Seul un dossier SOUMIS peut être pris en charge."},
-                status=status.HTTP_409_CONFLICT,
+            return _statut_incompatible(
+                dossier, "prendre ce dossier en charge", "SOUMIS"
             )
 
         try:
@@ -110,17 +129,20 @@ class ValeurChampCommenterAPIView(generics.GenericAPIView):
         commentaire = (request.data.get("commentaire") or "").strip()
 
         if not valeur_pk or not commentaire:
-            return Response(
-                {
-                    "detail": "Les champs `valeur` et `commentaire` sont obligatoires.",
+            return erreur(
+                "REQUETE_INVALIDE",
+                "Les champs `valeur` et `commentaire` sont obligatoires.",
+                status.HTTP_400_BAD_REQUEST,
+                champs={
+                    cle: ["Ce champ est obligatoire."]
+                    for cle in ("valeur", "commentaire")
+                    if not (valeur_pk if cle == "valeur" else commentaire)
                 },
-                status=status.HTTP_400_BAD_REQUEST,
             )
 
         if dossier.statut != Dossier.Statut.EN_INSTRUCTION:
-            return Response(
-                {"detail": "Le dossier doit être EN_INSTRUCTION pour commenter."},
-                status=status.HTTP_409_CONFLICT,
+            return _statut_incompatible(
+                dossier, "commenter une valeur", "EN INSTRUCTION"
             )
 
         valeur = get_object_or_404(ValeurChamp, pk=valeur_pk, dossier_id=dossier_pk)
@@ -169,10 +191,7 @@ class DossierValiderAPIView(generics.GenericAPIView):
         dossier = _recuperer_dossier_autorise(request, self, dossier_pk)
 
         if dossier.statut != Dossier.Statut.EN_INSTRUCTION:
-            return Response(
-                {"detail": "Seul un dossier EN_INSTRUCTION peut être validé."},
-                status=status.HTTP_409_CONFLICT,
-            )
+            return _statut_incompatible(dossier, "valider ce dossier", "EN INSTRUCTION")
 
         try:
             transiter(
@@ -200,10 +219,7 @@ class DossierRejeterAPIView(generics.GenericAPIView):
         dossier = _recuperer_dossier_autorise(request, self, dossier_pk)
 
         if dossier.statut != Dossier.Statut.EN_INSTRUCTION:
-            return Response(
-                {"detail": "Seul un dossier EN_INSTRUCTION peut être rejeté."},
-                status=status.HTTP_409_CONFLICT,
-            )
+            return _statut_incompatible(dossier, "rejeter ce dossier", "EN INSTRUCTION")
 
         motif = (request.data.get("motif_rejet") or "").strip()
         try:
@@ -211,6 +227,40 @@ class DossierRejeterAPIView(generics.GenericAPIView):
                 dossier, Dossier.Statut.REJETE,
                 agent=request.user, motif_rejet=motif,
                 utilisateur=request.user, requete=request,
+            )
+        except ValidationError as exc:
+            raise drf_serializers.ValidationError(exc.messages)
+
+        dossier.refresh_from_db()
+        return Response(self.get_serializer(dossier).data, status=status.HTTP_200_OK)
+
+
+class DossierActiverAPIView(generics.GenericAPIView):
+    """UC post-validation : le personnel SGI ouvre le compte-titres d'un dossier VALIDE.
+
+    POST /api/dossiers/dossiers/<pk>/activer/
+
+    Quand la SGI exige un dépôt minimum, `transiter` refuse l'activation
+    tant que la preuve n'est pas approuvée (le passage passe alors par
+    `DepotVerifierAgentAPIView`, qui active automatiquement).
+    L'appel direct couvre donc le cas d'une SGI sans exigence de dépôt.
+    """
+
+    serializer_class = DossierDetailSerializer
+    permission_classes = (permissions.IsAuthenticated, EstPersonnelSGI)
+
+    def post(self, request, dossier_pk):
+        dossier = _recuperer_dossier_autorise(request, self, dossier_pk)
+
+        if dossier.statut != Dossier.Statut.VALIDE:
+            return _statut_incompatible(
+                dossier, "activer ce compte-titres", "VALIDÉ"
+            )
+
+        try:
+            transiter(
+                dossier, Dossier.Statut.ACTIF,
+                agent=request.user, utilisateur=request.user, requete=request,
             )
         except ValidationError as exc:
             raise drf_serializers.ValidationError(exc.messages)
@@ -246,42 +296,53 @@ class DossierTransfererAPIView(generics.GenericAPIView):
         dossier = _recuperer_dossier_autorise(request, self, dossier_pk)
 
         if dossier.statut not in (Dossier.Statut.SOUMIS, Dossier.Statut.EN_INSTRUCTION):
-            return Response(
-                {"detail": "Seul un dossier SOUMIS ou EN_INSTRUCTION peut être transféré."},
-                status=status.HTTP_409_CONFLICT,
+            return _statut_incompatible(
+                dossier,
+                "transférer ce dossier",
+                "SOUMIS ou EN INSTRUCTION",
             )
 
         agent_id = request.data.get("agent_id")
         if not agent_id:
-            return Response(
-                {"detail": "Le champ `agent_id` est obligatoire."},
-                status=status.HTTP_400_BAD_REQUEST,
+            return erreur(
+                "REQUETE_INVALIDE",
+                "Le champ `agent_id` est obligatoire.",
+                status.HTTP_400_BAD_REQUEST,
+                champs={"agent_id": ["Ce champ est obligatoire."]},
             )
 
         try:
             agent_cible = Utilisateur.objects.get(pk=agent_id)
         except (Utilisateur.DoesNotExist, ValueError):
-            return Response(
-                {"detail": "Agent introuvable."},
-                status=status.HTTP_404_NOT_FOUND,
+            return erreur(
+                "AGENT_INTROUVABLE",
+                "Agent introuvable : vérifiez l'identifiant `agent_id`.",
+                status.HTTP_404_NOT_FOUND,
             )
 
         if not agent_cible.is_active:
-            return Response(
-                {"detail": "Cet agent est désactivé."},
-                status=status.HTTP_400_BAD_REQUEST,
+            return erreur(
+                "AGENT_DESACTIVE",
+                f"L'agent {agent_cible.get_full_name() or agent_cible.email} "
+                "est désactivé : choisissez un autre agent.",
+                status.HTTP_400_BAD_REQUEST,
             )
 
         if agent_cible.sgi_id != dossier.sgi_id:
-            return Response(
-                {"detail": "Cet agent n'appartient pas à la même SGI que le dossier."},
-                status=status.HTTP_400_BAD_REQUEST,
+            return erreur(
+                "AGENT_HORS_SGI",
+                (
+                    "Cet agent n'appartient pas à la même SGI que le dossier : "
+                    "le transfert doit rester interne à la SGI."
+                ),
+                status.HTTP_400_BAD_REQUEST,
             )
 
         if agent_cible.role.code not in (Role.Code.AGENT_SGI, Role.Code.ADMIN_SGI):
-            return Response(
-                {"detail": "L'agent cible doit être un Agent SGI ou Admin SGI."},
-                status=status.HTTP_400_BAD_REQUEST,
+            return erreur(
+                "AGENT_ROLE_INVALIDE",
+                "L'agent cible doit être un Agent SGI ou Admin SGI.",
+                status.HTTP_400_BAD_REQUEST,
             )
 
         from django.db import transaction
@@ -294,9 +355,15 @@ class DossierTransfererAPIView(generics.GenericAPIView):
                 dossier = type(dossier).objects.select_for_update().get(pk=dossier.pk)
 
                 if dossier.statut not in (Dossier.Statut.SOUMIS, Dossier.Statut.EN_INSTRUCTION):
-                    return Response(
-                        {"detail": "Le statut du dossier a changé pendant le transfert."},
-                        status=status.HTTP_409_CONFLICT,
+                    return erreur(
+                        "STATUT_INCOMPATIBLE",
+                        (
+                            f"Le statut du dossier a changé pendant le transfert : "
+                            f"il est désormais « {dossier.get_statut_display()} ». "
+                            "Rechargez le dossier et réessayez."
+                        ),
+                        status.HTTP_409_CONFLICT,
+                        statut_actuel=dossier.statut,
                     )
 
                 ancien_agent_id = dossier.agent_id
@@ -333,9 +400,10 @@ class DossierTransfererAPIView(generics.GenericAPIView):
                     requete=request,
                 )
         except ValidationError as exc:
-            return Response(
-                {"detail": "; ".join(exc.messages)},
-                status=status.HTTP_409_CONFLICT,
+            return erreur(
+                "TRANSITION_REFUSEE",
+                " ".join(exc.messages),
+                status.HTTP_409_CONFLICT,
             )
 
         dossier.refresh_from_db()

@@ -2,7 +2,7 @@
 
 from django.contrib import admin
 
-from dossiers.models import ChampKYC, EtapeKYC, Dossier, ValeurChamp
+from dossiers.models import ChampKYC, DepotMinimum, EtapeKYC, Dossier, ValeurChamp
 
 
 class ChampKYCInline(admin.TabularInline):
@@ -53,3 +53,14 @@ class ValeurChampAdmin(admin.ModelAdmin):
     @admin.display(description="Valeur")
     def valeur_ou_fichier(self, obj):
         return obj.fichier or obj.valeur
+
+
+@admin.register(DepotMinimum)
+class DepotMinimumAdmin(admin.ModelAdmin):
+    list_display = (
+        "dossier", "montant_requis", "statut", "methode_paiement",
+        "reference_transaction", "date_depot", "date_verification",
+    )
+    list_filter = ("statut",)
+    search_fields = ("dossier__reference", "reference_transaction")
+    readonly_fields = ("id", "date_creation", "date_maj")

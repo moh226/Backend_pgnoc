@@ -23,6 +23,7 @@ from dossiers.serializers_kyc_admin import (
     ChampKYCAdminSerializer, EtapeKYCAdminSerializer,
 )
 from dossiers.utils import est_uuid_valide
+from pgnoc.erreurs import erreur
 
 
 def _apercu_etape(etape):
@@ -82,24 +83,38 @@ class EtapeKYCRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView
     def delete(self, request, *args, **kwargs):
         etape = self.get_object()
         if Dossier.objects.filter(etape_courante=etape).exists():
-            return Response(
-                {"detail": "Des dossiers référencent cette étape : "
-                           "désactivez-la plutôt que de la supprimer."},
-                status=status.HTTP_409_CONFLICT,
+            return erreur(
+                "SUPPRESSION_INTERDITE",
+                (
+                    f"Des dossiers référencent l'étape « {etape.nom} » : "
+                    "désactivez-la plutôt que de la supprimer."
+                ),
+                status.HTTP_409_CONFLICT,
+                cible=etape.nom,
             )
         if ValeurChamp.objects.filter(champ__etape=etape).exists():
-            return Response(
-                {"detail": "Des valeurs ont déjà été saisies pour cette "
-                           "étape : désactivez-la plutôt que de la supprimer."},
-                status=status.HTTP_409_CONFLICT,
+            return erreur(
+                "SUPPRESSION_INTERDITE",
+                (
+                    f"Des valeurs ont déjà été saisies pour l'étape "
+                    f"« {etape.nom} » : désactivez-la plutôt que de la "
+                    "supprimer."
+                ),
+                status.HTTP_409_CONFLICT,
+                cible=etape.nom,
             )
         try:
             etape.delete()
         except ProtectedError:
-            return Response(
-                {"detail": "Cette étape est référencée par des dossiers en "
-                           "cours : désactivez-la plutôt que de la supprimer."},
-                status=status.HTTP_409_CONFLICT,
+            return erreur(
+                "SUPPRESSION_INTERDITE",
+                (
+                    f"L'étape « {etape.nom} » est référencée par des "
+                    "dossiers en cours : désactivez-la plutôt que de la "
+                    "supprimer."
+                ),
+                status.HTTP_409_CONFLICT,
+                cible=etape.nom,
             )
         journaliser(
             request.user,
@@ -163,16 +178,25 @@ class ChampKYCRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView
     def delete(self, request, *args, **kwargs):
         champ = self.get_object()
         if ValeurChamp.objects.filter(champ_id=champ.pk).exists():
-            return Response(
-                {"detail": "Des valeurs ont déjà été saisies pour ce champ : "
-                           "désactivez-le plutôt que de le supprimer."},
-                status=status.HTTP_409_CONFLICT,
+            return erreur(
+                "SUPPRESSION_INTERDITE",
+                (
+                    f"Des valeurs ont déjà été saisies pour le champ "
+                    f"« {champ.nom} » : désactivez-le plutôt que de le "
+                    "supprimer."
+                ),
+                status.HTTP_409_CONFLICT,
+                cible=champ.nom,
             )
         if ChampKYC.objects.filter(champ_parent_id=champ.pk).exists():
-            return Response(
-                {"detail": "Ce champ est parent d'autres champs : "
-                           "désactivez-le plutôt que de le supprimer."},
-                status=status.HTTP_409_CONFLICT,
+            return erreur(
+                "SUPPRESSION_INTERDITE",
+                (
+                    f"Le champ « {champ.nom} » est parent d'autres champs : "
+                    "désactivez-le plutôt que de le supprimer."
+                ),
+                status.HTTP_409_CONFLICT,
+                cible=champ.nom,
             )
         champ.delete()
         journaliser(

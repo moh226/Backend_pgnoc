@@ -283,6 +283,7 @@ class Dossier(models.Model):
         EN_INSTRUCTION = "EN_INSTRUCTION", _("En instruction")
         VALIDE = "VALIDE", _("Validé")
         REJETE = "REJETE", _("Rejeté")
+        ACTIF = "ACTIF", _("Compte actif")
 
     class TypeSignature(models.TextChoices):
         OTP = "OTP", _("OTP")
@@ -505,6 +506,83 @@ class Dossier(models.Model):
 
     def __str__(self):
         return f"{self.reference} ({self.get_statut_display()})"
+
+
+class DepotMinimum(models.Model):
+    """Preuve de dépôt minimum posée sur un dossier VALIDE (activation du compte).
+
+    Post-validation : le dossier validé ne devient ACTIF (compte-titres
+    ouvert) qu'après approbation de la preuve de dépôt par le personnel
+    SGI — quand la SGI a activé l'exigence (`ConfigDepotMinimum`).
+
+    Cycle de vie du dépôt :
+      EN_ATTENTE (créé à la validation)
+        → PREUVE_DEPOSEE (l'investisseur transmet capture + référence)
+        → APPROUVE (l'agent vérifie et ouvre le compte)
+        → REJETE (preuve invalide) → l'investisseur redépose (PREUVE_DEPOSEE)
+
+    Montant et instructions sont FIGÉS au moment de la création (copie
+    de la config SGI) : l'exigence ne peut pas changer rétroactivement
+    pour un dépôt déjà exigé.
+    """
+
+    class Statut(models.TextChoices):
+        EN_ATTENTE = "EN_ATTENTE", _("En attente")
+        PREUVE_DEPOSEE = "PREUVE_DEPOSEE", _("Preuve déposée")
+        APPROUVE = "APPROUVE", _("Approuvé")
+        REJETE = "REJETE", _("Rejeté")
+
+    id = models.UUIDField(
+        primary_key=True, default=uuid.uuid4, editable=False,
+        verbose_name=_("Identifiant"),
+    )
+    dossier = models.OneToOneField(
+        Dossier, verbose_name=_("Dossier"), related_name="depot_minimum",
+        on_delete=models.CASCADE,
+        help_text=_("Un dépôt par dossier : créé à la validation du dossier (post-validation)."),
+    )
+    # --- Exigence figée à la création ---
+    montant_requis = models.DecimalField(
+        _("Montant requis (FCFA)"), max_digits=14, decimal_places=0,
+        default=0,
+    )
+    instructions = models.TextField(_("Instructions de paiement"), blank=True)
+    methodes_acceptees = models.JSONField(_("Méthodes acceptées"), default=list)
+
+    # --- Saisie investisseur ---
+    statut = models.CharField(
+        _("Statut"), max_length=20, choices=Statut.choices,
+        default=Statut.EN_ATTENTE, db_index=True,
+    )
+    montant_depose = models.DecimalField(
+        _("Montant déposé (FCFA)"), max_digits=14, decimal_places=0,
+        null=True, blank=True,
+    )
+    methode_paiement = models.CharField(
+        _("Méthode de paiement"), max_length=30, blank=True,
+    )
+    reference_transaction = models.CharField(
+        _("Référence de la transaction"), max_length=100, blank=True,
+    )
+    preuve = models.FileField(
+        _("Preuve de dépôt"), upload_to="dossiers/depots/", blank=True,
+        help_text=_("Capture d'écran (image) ou relevé PDF de la transaction."),
+    )
+    date_depot = models.DateTimeField(_("Date de dépôt"), null=True, blank=True)
+
+    # --- Vérification agent ---
+    commentaire_agent = models.TextField(_("Commentaire de la SGI"), blank=True)
+    date_verification = models.DateTimeField(_("Date de vérification"), null=True, blank=True)
+
+    date_creation = models.DateTimeField(_("Date de création"), auto_now_add=True)
+    date_maj = models.DateTimeField(_("Dernière modification"), auto_now=True)
+
+    class Meta:
+        verbose_name = _("Dépôt minimum")
+        verbose_name_plural = _("Dépôts minimum")
+
+    def __str__(self):
+        return f"Dépôt {self.montant_requis} FCFA — {self.dossier.reference} ({self.get_statut_display()})"
 
 
 class ValeurChamp(models.Model):

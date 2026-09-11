@@ -1,0 +1,15 @@
+{% extends "emails/base.html" %}
+{% block titre %}Preuve de dépôt à vérifier{% endblock %}
+{% block contenu %}
+<p>Bonjour,</p>
+<p>Une preuve de dépôt minimum attend une vérification pour le dossier <strong>{{ reference }}</strong> :</p>
+<ul>
+    <li>Investisseur : {{ investisseur_email }}</li>
+    <li>SGI : {{ sgi_nom }}</li>
+    <li>Montant déclaré : {{ montant_depose }} FCFA</li>
+    <li>Méthode : {{ methode_paiement }}</li>
+    <li>Référence de transaction : {{ reference_transaction }}</li>
+</ul>
+<p>Connectez-vous à votre espace pour approuver ou rejeter la preuve.</p>
+<p>Cordialement,<br>L'équipe PGNOC-TI</p>
+{% endblock %}

@@ -242,8 +242,8 @@ class CycleRejetCorrectionTests(APITestCase):
         )
         self.assertEqual(self.dossier.motif_rejet, "CNIB illisible")
 
-        # Le rejet purge la signature : re-signature avant resoumission.
-        _signer_dossier(self.dossier)
+        # La résoumission ne redemande pas de signature : la preuve du
+        # contenu corrigé est re-scellée automatiquement (signé une fois).
         transiter(self.dossier, Dossier.Statut.SOUMIS)
         self.dossier.refresh_from_db()
         self.assertEqual(self.dossier.motif_rejet, "")
@@ -346,3 +346,95 @@ class CycleRejetCorrectionTests(APITestCase):
         self.assertEqual(reponse.status_code, status.HTTP_403_FORBIDDEN)
         valeur = ValeurChamp.objects.get(dossier=self.dossier, champ=champ_fichier)
         self.assertEqual(valeur.fichier, "dossiers/x/ancien.pdf")
+
+    def test_rejete_champ_obligatoire_vide_reste_editable_apres_premiere_saisie(self):
+        """Régression « une seule lettre puis verrouillage ».
+
+        Un champ OBLIGATOIRE vide au rejet (ex. ajouté par la SGI après
+        coup) doit rester modifiable AUTANT DE FOIS que nécessaire :
+        historiquement, la première écriture créait la valeur, puis
+        toute retouche était refusée (403) parce que « une valeur existe
+        sans commentaire ». Le verrouillage se base désormais sur la
+        date de création de la valeur (immuable) : créée après le rejet
+        = jamais relue par l'agent = éditable.
+        """
+        ValeurChamp.objects.create(
+            dossier=self.dossier, champ=self.champ, valeur="Awa",
+        )
+        self._rejeter_en_instruction()
+
+        # La SGI ajoute un champ obligatoire APRÈS le rejet : le dossier
+        # doit rester corrigeable/soumissible malgré tout.
+        champ_patrimoine = ChampKYC.objects.create(
+            etape=self.champ.etape, code="patrimoine", nom="Patrimoine estimé",
+            type=ChampKYC.TypeChamp.TEXTE_COURT, obligatoire=True,
+        )
+
+        self.client.force_authenticate(self.investisseur)
+        url = reverse("dossiers:dossier-valeurs", kwargs={"dossier_pk": self.dossier.pk})
+
+        # Première saisie : création autorisée.
+        reponse = self.client.post(
+            url, {"champ": champ_patrimoine.pk, "valeur": "5"},
+        )
+        self.assertEqual(reponse.status_code, status.HTTP_201_CREATED)
+
+        # Deuxième saisie (retouche) : DOIT rester autorisée — c'est la
+        # régression : la valeur existe maintenant, mais elle a été créée
+        # APRÈS le rejet, l'agent ne l'a jamais relue.
+        reponse = self.client.post(
+            url, {"champ": champ_patrimoine.pk, "valeur": "5 000 000 FCFA"},
+        )
+        self.assertEqual(reponse.status_code, status.HTTP_200_OK)
+        valeur = ValeurChamp.objects.get(dossier=self.dossier, champ=champ_patrimoine)
+        self.assertEqual(valeur.valeur, "5 000 000 FCFA")
+
+        # Troisième saisie : toujours éditable tant que le dossier est
+        # en correction (saisie progressive d'un vrai formulaire).
+        reponse = self.client.post(
+            url, {"champ": champ_patrimoine.pk, "valeur": "7 500 000 FCFA"},
+        )
+        self.assertEqual(reponse.status_code, status.HTTP_200_OK)
+
+        # Contrairement au champ rempli AVANT le rejet (donc relu et non
+        # commenté par l'agent) : lui reste verrouillé.
+        reponse = self.client.post(
+            url, {"champ": self.champ.pk, "valeur": "Autre nom"},
+        )
+        self.assertEqual(reponse.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_resoumission_puis_nouveau_rejet_verrouille_les_valeurs_saisies_entre_temps(self):
+        """Une valeur saisie pendant la correction est verrouillée au
+        rejet SUIVANT si l'agent l'a relue sans la commenter : la date
+        de décision du nouveau rejet devient postérieure à sa création."""
+        ValeurChamp.objects.create(
+            dossier=self.dossier, champ=self.champ, valeur="Awa",
+        )
+        self._rejeter_en_instruction()
+
+        # Champ ajouté après le rejet n°1, puis saisi par l'investisseur
+        # pendant la phase de correction.
+        champ_b = ChampKYC.objects.create(
+            etape=self.champ.etape, code="revenu", nom="Revenu",
+            type=ChampKYC.TypeChamp.NOMBRE, obligatoire=True,
+        )
+        ValeurChamp.objects.create(
+            dossier=self.dossier, champ=champ_b, valeur="500000",
+        )
+        # Resoumission, re-instruction, second rejet : l'agent a relu
+        # la valeur cette fois (sans la commenter).
+        transiter(self.dossier, Dossier.Statut.SOUMIS)
+        transiter(
+            self.dossier, Dossier.Statut.EN_INSTRUCTION, agent=self.agent,
+        )
+        transiter(
+            self.dossier, Dossier.Statut.REJETE, agent=self.agent,
+            motif_rejet="Autre remarque", utilisateur=self.agent,
+        )
+
+        self.client.force_authenticate(self.investisseur)
+        reponse = self.client.post(
+            reverse("dossiers:dossier-valeurs", kwargs={"dossier_pk": self.dossier.pk}),
+            {"champ": champ_b.pk, "valeur": "999999"},
+        )
+        self.assertEqual(reponse.status_code, status.HTTP_403_FORBIDDEN)

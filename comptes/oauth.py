@@ -37,6 +37,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 
 from comptes.models import Role, Utilisateur
 from comptes.serializers import UtilisateurTokenObtainPairSerializer
+from pgnoc.erreurs import erreur
 
 logger = logging.getLogger("pgnoc.oauth")
 
@@ -100,9 +101,13 @@ class ConnexionGoogleAPIView(APIView):
     @extend_schema(responses={302: OpenApiTypes.URI})
     def get(self, request):
         if not settings.GOOGLE_OAUTH_CLIENT_ID:
-            return Response(
-                {"detail": "L'authentification Google n'est pas configurée."},
-                status=status.HTTP_501_NOT_IMPLEMENTED,
+            return erreur(
+                "GOOGLE_NON_CONFIGURE",
+                (
+                    "La connexion Google n'est pas disponible pour le "
+                    "moment : utilisez vos identifiants classiques."
+                ),
+                status.HTTP_501_NOT_IMPLEMENTED,
             )
 
         state = secrets.token_urlsafe(32)

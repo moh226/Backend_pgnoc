@@ -171,7 +171,8 @@ class ParametrageChampKYCTests(APITestCase):
         """Un `?etape=` non-UUID doit donner un 400 (et non un 500)."""
         reponse = self.client.get(self.url_liste, {"etape": "pas-un-uuid"})
         self.assertEqual(reponse.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("etape", reponse.data)
+        # Enveloppe d'erreur unifiée : champ fautif sous `champs`.
+        self.assertIn("etape", reponse.data["champs"])
 
     def test_champ_conditionnel_oblige_a_un_declencheur(self):
         pere = ChampKYC.objects.create(

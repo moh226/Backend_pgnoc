@@ -1,0 +1,10 @@
+{% extends "emails/base.html" %}
+{% block titre %}Preuve de dépôt rejetée{% endblock %}
+{% block contenu %}
+<p>Bonjour <strong>{{ prenom|default:email }}</strong>,</p>
+<p>Votre preuve de dépôt pour le dossier <strong>{{ reference }}</strong> a été rejetée par la SGI <strong>{{ sgi_nom }}</strong>.</p>
+<p>Motif : {{ commentaire_agent|default:"—" }}</p>
+<p>Vous pouvez déposer une nouvelle preuve de dépôt depuis votre espace investisseur.</p>
+<p><a href="{{ url_dossier }}" style="color:#1565c0;">Voir mon dossier</a></p>
+<p>Cordialement,<br>L'équipe PGNOC-TI</p>
+{% endblock %}
